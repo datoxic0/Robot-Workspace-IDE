@@ -1,0 +1,6 @@
+{
+  "name": "Robot Workspace IDE",
+  "description": "An interactive robotic programming and CIM design environment supporting multiple boards, languages, real-time joint kinematic simulations, and server-side Gemini AI co-pilot.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
