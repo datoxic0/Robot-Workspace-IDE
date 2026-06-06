@@ -63,7 +63,7 @@ export interface SimulationState {
   conveyorRunning: boolean;
   blockPosition: number; // 0 to 100 on conveyor
   hasBlock: boolean;
-  status: "idle" | "compiling" | "uploading" | "connecting" | "running" | "error";
+  status: "idle" | "compiling" | "uploading" | "connecting" | "running" | "error" | "paused";
   simulationSpeed: number; // Multiplier, default 1
 }
 

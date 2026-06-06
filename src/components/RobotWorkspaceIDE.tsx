@@ -28,7 +28,8 @@ import {
   X,
   HelpCircle,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Pause
 } from "lucide-react";
 
 interface RobotWorkspaceIDEProps {
@@ -92,6 +93,7 @@ export default function RobotWorkspaceIDE({
   const sensorPositionXRef = useRef(sensorPositionX);
   const jointsRef = useRef(joints);
   const waitingOnSensorRef = useRef(false);
+  const simulationStateRef = useRef(simulationState);
 
   useEffect(() => {
     workpiecesRef.current = workpieces;
@@ -104,6 +106,10 @@ export default function RobotWorkspaceIDE({
   useEffect(() => {
     jointsRef.current = joints;
   }, [joints]);
+
+  useEffect(() => {
+    simulationStateRef.current = simulationState;
+  }, [simulationState]);
   
   const [newFileName, setNewFileName] = useState("");
   const [showAddFile, setShowAddFile] = useState(false);
@@ -111,6 +117,17 @@ export default function RobotWorkspaceIDE({
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [interpreterIntervalId, setInterpreterIntervalId] = useState<NodeJS.Timeout | null>(null);
   const [simulationSpeed, setSimulationSpeed] = useState<number>(1000); // Step interval in milliseconds
+
+  const lineIdxRef = useRef<number>(0);
+  const variableMapRef = useRef<Record<string, number>>({});
+  const loopStartIndexRef = useRef<number>(-1);
+  const loopCountRef = useRef<number>(0);
+  const maxLoopsRef = useRef<number>(9999);
+  const activeDelayTicksRef = useRef<number>(0);
+  const isSteppingRef = useRef<boolean>(false);
+  const compileTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const uploadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
 
   const activeFile = files[activeFileIndex] || { name: "untitled", content: "", language: activeLanguage.id };
 
@@ -209,10 +226,19 @@ export default function RobotWorkspaceIDE({
 
   // Compile & Upload simulation sequence triggers
   const handleCompileAndRun = () => {
-    if (simulationState.isRunning) {
+    // Prevent double clicking compilation sequences and overlapping timers
+    if (simulationState.status === "compiling" || simulationState.status === "uploading") {
+      return;
+    }
+
+    if (simulationState.isRunning || simulationState.status === "paused") {
       stopSimulation();
       return;
     }
+
+    // Cancel any existing compile/upload timeouts
+    if (compileTimeoutRef.current) clearTimeout(compileTimeoutRef.current);
+    if (uploadTimeoutRef.current) clearTimeout(uploadTimeoutRef.current);
 
     setSimulationState((prev) => ({ ...prev, status: "compiling" }));
     addLog("info", `Starting compile pipeline for Board[${activeBoard.id.toUpperCase()}] using toolchain...`);
@@ -240,12 +266,12 @@ export default function RobotWorkspaceIDE({
       { id: `wp-${Date.now()}`, color: firstColor, positionX: -20, status: "approaching" }
     ]);
 
-    setTimeout(() => {
+    compileTimeoutRef.current = setTimeout(() => {
       addLog("success", "Code validation parsed successfully. Built binary sizes: 142 KB (6.7% capacity).");
       setSimulationState((prev) => ({ ...prev, status: "uploading" }));
       addLog("info", `Initializing serial boundary flash over USB port: COM22 (operating at 115200 bps)...`);
 
-      setTimeout(() => {
+      uploadTimeoutRef.current = setTimeout(() => {
         addLog("success", "Flashing completed. System reset performed. Firmware loaded.");
         setSimulationState((prev) => ({
           ...prev,
@@ -272,28 +298,40 @@ export default function RobotWorkspaceIDE({
   };
 
   // Real-time Interpreter & physics synchronizer for G-Code scripts!
-  const startGcodeInterpreter = () => {
+  const startGcodeInterpreter = (resumeFromPause = false) => {
     const codeLines = activeFile.content.split("\n");
-    let lineIdx = 0;
+    let lineIdx = resumeFromPause ? lineIdxRef.current : 0;
+    if (!resumeFromPause) {
+      waitingOnSensorRef.current = false;
+    }
 
     // Default base coordinates
     const baseX = 300;
     const baseY = 290;
 
     // Dynamic Variables & Loops Dictionary local to this closure run
-    const variableMap: Record<string, number> = {
+    const variableMap: Record<string, number> = resumeFromPause ? variableMapRef.current : {
       "#102": Math.round((sensorPositionX - baseX) * 1.5 * 10) / 10
     };
-    let loopStartIndex = -1;
-    let loopCount = 0;
-    let maxLoops = 9999;
-    let activeDelayTicks = 0;
+    let loopStartIndex = resumeFromPause ? loopStartIndexRef.current : -1;
+    let loopCount = resumeFromPause ? loopCountRef.current : 0;
+    let maxLoops = resumeFromPause ? maxLoopsRef.current : 9999;
+    let activeDelayTicks = resumeFromPause ? activeDelayTicksRef.current : 0;
     const currentSpeed = simulationSpeed; // Cache current delay value in closure
 
     const intervalId = setInterval(() => {
+      // Synchronize latest execution parameters/pointers for debugging panels
+      lineIdxRef.current = lineIdx;
+      variableMapRef.current = variableMap;
+      loopStartIndexRef.current = loopStartIndex;
+      loopCountRef.current = loopCount;
+      maxLoopsRef.current = maxLoops;
+      activeDelayTicksRef.current = activeDelayTicks;
+
       // If we are currently in a dwell (G04), decrement ticks and return/stall execution
       if (activeDelayTicks > 0) {
         activeDelayTicks--;
+        activeDelayTicksRef.current = activeDelayTicks;
         return;
       }
 
@@ -394,119 +432,169 @@ export default function RobotWorkspaceIDE({
               const hasA = parsed.params.A !== undefined;
               const hasB = parsed.params.B !== undefined;
 
-              setJoints((prev) => {
-                let nextJoints = prev.map(j => ({ ...j }));
+              // Read joints state relative to jointsRef.current to avoid stale references
+              const startJoints = jointsRef.current.map(j => ({ ...j }));
+              let nextJoints = jointsRef.current.map(j => ({ ...j }));
 
-                // 1. Update Base joint (Waist) from B parameter (simulated swivel)
-                if (hasB) {
-                  const valB = parsed.params.B ?? 0;
-                  nextJoints = nextJoints.map(j => j.id === "base" ? { ...j, angle: Math.max(j.minAngle, Math.min(valB, j.maxAngle)) } : j);
-                }
+              // 1. Update Base joint (Waist) from B parameter (simulated swivel)
+              if (hasB) {
+                const valB = parsed.params.B ?? 0;
+                nextJoints = nextJoints.map(j => j.id === "base" ? { ...j, angle: Math.max(j.minAngle, Math.min(valB, j.maxAngle)) } : j);
+              }
 
-                // 2. Update Wrist Pitch joint from A parameter
-                if (hasA) {
-                  const valA = parsed.params.A ?? 0;
-                  nextJoints = nextJoints.map(j => j.id === "wrist" ? { ...j, angle: Math.max(j.minAngle, Math.min(valA, j.maxAngle)) } : j);
-                }
+              // 2. Update Wrist Pitch joint from A parameter
+              if (hasA) {
+                const valA = parsed.params.A ?? 0;
+                nextJoints = nextJoints.map(j => j.id === "wrist" ? { ...j, angle: Math.max(j.minAngle, Math.min(valA, j.maxAngle)) } : j);
+              }
 
-                // 3. Resolve planar tool coordinates X, Y, Z
-                if (hasCoords) {
-                  const mmScale = 1.5;
-                  const rawX = parsed.params.X ?? 0;
-                  // Handle Z falling back to Y, then to 120 (preventing falsy zero bugs)
-                  const rawZ = parsed.params.Z ?? parsed.params.Y ?? 120;
-                  const pixelsX = baseX + rawX / mmScale;
-                  const pixelsY = baseY - rawZ / mmScale;
-
+              // 3. Resolve planar tool coordinates X, Y, Z
+              if (hasCoords) {
+                const mmScale = 1.5;
+                
+                // Helper to resolve current end-effector position based on active robot design kinematics
+                const getEffectorPos = (jointsList: RobotJoint[]) => {
                   if (robotType === "cartesian") {
-                    let carriageX = pixelsX;
-                    if (carriageX < 70) carriageX = 70;
-                    if (carriageX > 530) carriageX = 530;
-                    const targetJ1Angle = (carriageX - baseX) / 1.45;
-
                     const railY = 110;
-                    let targetPlungeY = pixelsY - 12;
-                    if (targetPlungeY < railY + 80) targetPlungeY = railY + 80;
-                    if (targetPlungeY > railY + 190) targetPlungeY = railY + 190;
-
-                    const targetPlungeHeight = targetPlungeY - railY;
-                    const targetJ2Angle = ((targetPlungeHeight - 80) / 110) * 240 - 120;
-
-                    nextJoints = nextJoints.map((j) => {
-                      if (j.id === "shoulder") return { ...j, angle: Math.round(targetJ1Angle) };
-                      if (j.id === "elbow") return { ...j, angle: Math.round(targetJ2Angle) };
-                      return j;
-                    });
+                    const carriageX = baseX + jointsList[1].angle * 1.45;
+                    const plungeHeight = 80 + ((jointsList[2].angle + 120) / 240) * 110;
+                    const plungeY = railY + plungeHeight;
+                    return { x: carriageX, y: plungeY + 12 };
                   } else if (robotType === "scara") {
                     const postHeight = 110;
-                    const originX = baseX;
-                    const originY = baseY - postHeight; // (300, 180)
-
-                    const l1 = nextJoints.find(j => j.id === "shoulder")?.length ?? 110;
-                    const l2 = nextJoints.find(j => j.id === "elbow")?.length ?? 100;
-                    const totalMaxReach = l1 + l2;
-
-                    let tx = pixelsX - originX;
-                    let ty = pixelsY - originY - 35; // adjust for wrist plunge guiding
-                    const dist = Math.hypot(tx, ty);
-
-                    if (dist > totalMaxReach) {
-                      tx *= (totalMaxReach / dist) * 0.98;
-                      ty *= (totalMaxReach / dist) * 0.98;
-                    }
-
-                    // Analytical SCARA planar forearm solver
-                    const cosAngle2 = (tx * tx + ty * ty - l1 * l1 - l2 * l2) / (2 * l1 * l2);
-                    const sinAngle2 = Math.sqrt(Math.max(0, 1 - cosAngle2 * cosAngle2));
-                    const angle2Rad = Math.atan2(sinAngle2, cosAngle2);
-
-                    const k1 = l1 + l2 * cosAngle2;
-                    const k2 = l2 * sinAngle2;
-                    const angle1Rad = Math.atan2(ty, tx) - Math.atan2(k2, k1);
-
-                    const a1Deg = (angle1Rad * 180) / Math.PI;
-                    const a2Deg = (angle2Rad * 180) / Math.PI;
-
-                    const currentPlungeY = pixelsY - (originY + l1 * Math.sin(angle1Rad) + l2 * Math.sin(angle1Rad + angle2Rad));
-                    const targetJ3Angle = ((currentPlungeY - 25) / 30) * 240 - 120;
-
-                    nextJoints = nextJoints.map((j) => {
-                      if (j.id === "shoulder") {
-                        const bonded = Math.max(j.minAngle, Math.min(a1Deg, j.maxAngle));
-                        return { ...j, angle: Math.round(bonded * 10) / 10 };
-                      }
-                      if (j.id === "elbow") {
-                        const bonded = Math.max(j.minAngle, Math.min(a2Deg, j.maxAngle));
-                        return { ...j, angle: Math.round(bonded * 10) / 10 };
-                      }
-                      if (j.id === "wrist" && !hasA) {
-                        const bonded = Math.max(j.minAngle, Math.min(targetJ3Angle, j.maxAngle));
-                        return { ...j, angle: Math.round(bonded * 10) / 10 };
-                      }
-                      return j;
-                    });
+                    const p0 = { x: baseX, y: baseY - postHeight };
+                    const l1 = jointsList.find(j => j.id === "shoulder")?.length ?? 110;
+                    const l2 = jointsList.find(j => j.id === "elbow")?.length ?? 100;
+                    const rad1 = (jointsList[1].angle * Math.PI) / 180;
+                    const p1 = {
+                      x: p0.x + l1 * Math.cos(rad1),
+                      y: p0.y + l1 * Math.sin(rad1)
+                    };
+                    const rad2 = rad1 + (jointsList[2].angle * Math.PI) / 180;
+                    const p2 = {
+                      x: p1.x + l2 * Math.cos(rad2),
+                      y: p1.y + l2 * Math.sin(rad2)
+                    };
+                    const slide = 25 + ((jointsList[3].angle + 120) / 240) * 30;
+                    return { x: p2.x, y: p2.y + slide };
                   } else {
-                    // Standard Articulated
-                    const clickX = pixelsX;
-                    const clickY = pixelsY;
-                    const distToClick = Math.hypot(clickX - baseX, clickY - baseY);
-                    const totalMaxReach = nextJoints.slice(1).reduce((sum, j) => sum + j.length, 0);
-
-                    let targetX = clickX;
-                    let targetY = clickY;
-
-                    if (distToClick > totalMaxReach) {
-                      const ratio = totalMaxReach / distToClick;
-                      targetX = baseX + (clickX - baseX) * ratio * 0.98;
-                      targetY = baseY + (clickY - baseY) * ratio * 0.98;
-                    }
-
-                    nextJoints = solveInverseKinematics(baseX, baseY, nextJoints, { x: targetX, y: targetY });
+                    const pts = calculateForwardKinematics(baseX, baseY, jointsList);
+                    return pts[pts.length - 1];
                   }
-                }
+                };
 
-                return nextJoints;
+                // Retrieve current real-world coordinates from previous joints list to preserve state
+                const currentEffector = getEffectorPos(startJoints);
+                let currentX_mm = (currentEffector.x - baseX) * mmScale;
+                let currentZ_mm = (baseY - currentEffector.y) * mmScale;
+                if (isNaN(currentX_mm) || !isFinite(currentX_mm)) currentX_mm = 0;
+                if (isNaN(currentZ_mm) || !isFinite(currentZ_mm)) currentZ_mm = 0;
+
+                const rawX = parsed.params.X !== undefined ? parsed.params.X : currentX_mm;
+                const rawZ = parsed.params.Z !== undefined ? parsed.params.Z : (parsed.params.Y !== undefined ? parsed.params.Y : currentZ_mm);
+                
+                const pixelsX = baseX + rawX / mmScale;
+                const pixelsY = baseY - rawZ / mmScale;
+
+                if (robotType === "cartesian") {
+                  let carriageX = pixelsX;
+                  if (carriageX < 70) carriageX = 70;
+                  if (carriageX > 530) carriageX = 530;
+                  const targetJ1Angle = (carriageX - baseX) / 1.45;
+
+                  const railY = 110;
+                  let targetPlungeY = pixelsY - 12;
+                  if (targetPlungeY < railY + 80) targetPlungeY = railY + 80;
+                  if (targetPlungeY > railY + 190) targetPlungeY = railY + 190;
+
+                  const targetPlungeHeight = targetPlungeY - railY;
+                  const targetJ2Angle = ((targetPlungeHeight - 80) / 110) * 240 - 120;
+
+                  nextJoints = nextJoints.map((j) => {
+                    if (j.id === "shoulder") return { ...j, angle: Math.round(targetJ1Angle) };
+                    if (j.id === "elbow") return { ...j, angle: Math.round(targetJ2Angle) };
+                    return j;
+                  });
+                } else if (robotType === "scara") {
+                  const postHeight = 110;
+                  const originX = baseX;
+                  const originY = baseY - postHeight; // (300, 180)
+
+                  const l1 = nextJoints.find(j => j.id === "shoulder")?.length ?? 110;
+                  const l2 = nextJoints.find(j => j.id === "elbow")?.length ?? 100;
+                  const totalMaxReach = l1 + l2;
+
+                  let tx = pixelsX - originX;
+                  let ty = pixelsY - originY - 35; // adjust for wrist plunge guiding
+                  const dist = Math.hypot(tx, ty);
+
+                  if (dist > totalMaxReach) {
+                    tx *= (totalMaxReach / dist) * 0.98;
+                    ty *= (totalMaxReach / dist) * 0.98;
+                  }
+
+                  // Analytical SCARA planar forearm solver
+                  const denom = 2 * l1 * l2;
+                  const cosAngle2 = denom === 0 ? 0 : Math.max(-1, Math.min(1, (tx * tx + ty * ty - l1 * l1 - l2 * l2) / denom));
+                  const sinAngle2 = Math.sqrt(Math.max(0, 1 - cosAngle2 * cosAngle2));
+                  const angle2Rad = Math.atan2(sinAngle2, cosAngle2);
+
+                  const k1 = l1 + l2 * cosAngle2;
+                  const k2 = l2 * sinAngle2;
+                  const angle1Rad = Math.atan2(ty, tx) - Math.atan2(k2, k1);
+
+                  const a1Deg = (angle1Rad * 180) / Math.PI;
+                  const a2Deg = (angle2Rad * 180) / Math.PI;
+
+                  const currentPlungeY = pixelsY - (originY + l1 * Math.sin(angle1Rad) + l2 * Math.sin(angle1Rad + angle2Rad));
+                  const targetJ3Angle = ((currentPlungeY - 25) / 30) * 240 - 120;
+
+                  nextJoints = nextJoints.map((j) => {
+                    if (j.id === "shoulder") {
+                      const bonded = Math.max(j.minAngle, Math.min(a1Deg, j.maxAngle));
+                      return { ...j, angle: Math.round(bonded * 10) / 10 };
+                    }
+                    if (j.id === "elbow") {
+                      const bonded = Math.max(j.minAngle, Math.min(a2Deg, j.maxAngle));
+                      return { ...j, angle: Math.round(bonded * 10) / 10 };
+                    }
+                    if (j.id === "wrist" && !hasA) {
+                      const bonded = Math.max(j.minAngle, Math.min(targetJ3Angle, j.maxAngle));
+                      return { ...j, angle: Math.round(bonded * 10) / 10 };
+                    }
+                    return j;
+                  });
+                } else {
+                  // Standard Articulated
+                  const clickX = pixelsX;
+                  const clickY = pixelsY;
+                  const distToClick = Math.hypot(clickX - baseX, clickY - baseY);
+                  const totalMaxReach = nextJoints.slice(1).reduce((sum, j) => sum + j.length, 0);
+
+                  let targetX = clickX;
+                  let targetY = clickY;
+
+                  if (distToClick > totalMaxReach) {
+                    const ratio = totalMaxReach / distToClick;
+                    targetX = baseX + (clickX - baseX) * ratio * 0.98;
+                    targetY = baseY + (clickY - baseY) * ratio * 0.98;
+                  }
+
+                  nextJoints = solveInverseKinematics(baseX, baseY, nextJoints, { x: targetX, y: targetY });
+                }
+              }
+
+              // Safeguard angles to avoid NaN propagation
+              nextJoints = nextJoints.map(j => {
+                if (isNaN(j.angle) || !isFinite(j.angle)) {
+                  // Fall back smoothly to its start angle to preserve visual integrity
+                  const match = startJoints.find(sj => sj.id === j.id);
+                  return { ...j, angle: match ? match.angle : 0 };
+                }
+                return j;
               });
+
+              setJoints(nextJoints);
               break;
             }
             case "M03": {
@@ -549,18 +637,44 @@ export default function RobotWorkspaceIDE({
               // Solenoid magnetic vacuum effector state toggles (P1 holds, P0 releases)
               const hasGripped = parsed.params.P === 1;
               setSimulationState((prev) => ({ ...prev, hasBlock: hasGripped }));
+
+              // Dynamic color scanning calibration: update variableMap for sorting bin X coordinates (#104)
+              if (hasGripped) {
+                const sensorX = sensorPositionXRef.current;
+                const grippedWp = workpiecesRef.current.find(wp => 
+                  wp.status === "approaching" && 
+                  wp.positionX >= sensorX - 15 && 
+                  wp.positionX <= sensorX + 15
+                );
+
+                if (grippedWp) {
+                  let targetX = 315; // default fallback reject (FAULTY REJECT SLOT)
+                  if (grippedWp.color === "red") targetX = 255;
+                  else if (grippedWp.color === "green") targetX = 195;
+                  else if (grippedWp.color === "blue") targetX = 135;
+                  else if (grippedWp.color === "yellow") targetX = 315;
+                  
+                  variableMap["#104"] = targetX;
+                  addLog("info", `[Sensor Color Calibration] Auto-computed dynamic sorting coordinate for [color=${grippedWp.color.toUpperCase()}]: [#104 = ${targetX}mm]`);
+                }
+              }
               
-              // Forward kinematics calculation to locate dropping X offset
-              const pts = calculateForwardKinematics(baseX, baseY, joints);
+              // Forward kinematics calculation to locate dropping/holding coordinates based on actual joints
+              const pts = calculateForwardKinematics(baseX, baseY, jointsRef.current);
               const endEffectorPoint = pts[pts.length - 1];
               const dropX = endEffectorPoint.x;
+              const dropY = endEffectorPoint.y;
 
               setWorkpieces((prev) => {
                 return prev.map((wp) => {
-                  const sensorX = sensorPositionXRef.current;
-                  if (wp.status === "approaching" && hasGripped && wp.positionX >= sensorX - 15 && wp.positionX <= sensorX + 15) {
-                    addLog("warn", `[Actuator] Pneumatic suction solenoid: ENGAGED [${wp.color.toUpperCase()} securely grasped]`);
-                    return { ...wp, status: "picked" };
+                  if (wp.status === "approaching" && hasGripped) {
+                    // Grab if workpiece X matches actual gripper X (within 24px) 
+                    // and gripper is sufficiently low (near conveyor bed level)
+                    const isNearGripper = Math.abs(wp.positionX - dropX) <= 24 && dropY >= 235;
+                    if (isNearGripper) {
+                      addLog("warn", `[Actuator] Pneumatic suction solenoid: ENGAGED [${wp.color.toUpperCase()} securely grasped at X=${Math.round(wp.positionX)}px]`);
+                      return { ...wp, status: "picked" };
+                    }
                   }
                   if (wp.status === "picked" && !hasGripped) {
                     addLog("warn", `[Actuator] Pneumatic suction solenoid: DE-ENERGIZED [Releasing workpiece at Drop-X=${Math.round(dropX)}px]`);
@@ -659,12 +773,66 @@ export default function RobotWorkspaceIDE({
       }
 
       lineIdx++;
+      if (isSteppingRef.current) {
+        isSteppingRef.current = false;
+        lineIdxRef.current = lineIdx;
+        pauseSimulation();
+      }
     }, currentSpeed) as any;
 
     setInterpreterIntervalId(intervalId);
   };
 
+  const pauseSimulation = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    if (interpreterIntervalId) {
+      clearInterval(interpreterIntervalId);
+      setInterpreterIntervalId(null);
+    }
+    setSimulationState((prev) => ({
+      ...prev,
+      status: "paused"
+    }));
+    addLog("warn", "Execution PAUSED. Interactive controller debugger activated.");
+  };
+
+  const resumeSimulation = () => {
+    setSimulationState((prev) => ({
+      ...prev,
+      status: "running"
+    }));
+    addLog("success", "Resuming industrial routine sequencer loop.");
+    startGcodeInterpreter(true);
+  };
+
+  const stepSimulationLine = () => {
+    if (!simulationState.isCompiled) {
+      addLog("error", "[Debugger Error] Compiler must be build & flashed before single stepping.");
+      return;
+    }
+    addLog("info", `[Step Tracing] Executing line ${lineIdxRef.current + 1}...`);
+    isSteppingRef.current = true;
+    startGcodeInterpreter(true);
+  };
+
   const stopSimulation = () => {
+    // Clear any out-of-order build timers
+    if (compileTimeoutRef.current) {
+      clearTimeout(compileTimeoutRef.current);
+      compileTimeoutRef.current = null;
+    }
+    if (uploadTimeoutRef.current) {
+      clearTimeout(uploadTimeoutRef.current);
+      uploadTimeoutRef.current = null;
+    }
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
     if (interpreterIntervalId) {
       clearInterval(interpreterIntervalId);
       setInterpreterIntervalId(null);
@@ -676,13 +844,28 @@ export default function RobotWorkspaceIDE({
       conveyorRunning: false,
       hasBlock: false
     }));
+    lineIdxRef.current = 0;
+    activeDelayTicksRef.current = 0;
+    waitingOnSensorRef.current = false;
     addLog("warn", "Firmware diagnostic loop halted by active supervisor.");
   };
+
+  // Active Safety Watchdog - Emergency Collision Shutdown
+  useEffect(() => {
+    if (simulationState.status === "error" && interpreterIntervalId) {
+      clearInterval(interpreterIntervalId);
+      setInterpreterIntervalId(null);
+      addLog("error", "[EMERGENCY COLLISION TRIPPED] Robotic arm breach detected at safety containment shield! Hardware safety interlock activated.");
+    }
+  }, [simulationState.status, interpreterIntervalId]);
 
   // Clean-up loop on unmount
   useEffect(() => {
     return () => {
       if (interpreterIntervalId) clearInterval(interpreterIntervalId);
+      if (compileTimeoutRef.current) clearTimeout(compileTimeoutRef.current);
+      if (uploadTimeoutRef.current) clearTimeout(uploadTimeoutRef.current);
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, [interpreterIntervalId]);
 
@@ -691,6 +874,8 @@ export default function RobotWorkspaceIDE({
     if (!simulationState.conveyorRunning) return;
 
     const tick = setInterval(() => {
+      let shouldHaltConveyor = false;
+
       setWorkpieces((prev) => {
         let triggerScanStats = false;
         let scannedColor: "red" | "green" | "blue" | "yellow" = "red";
@@ -698,12 +883,23 @@ export default function RobotWorkspaceIDE({
         const mapped = prev.map((wp) => {
           if (wp.status === "approaching") {
             const step = 2 * conveyorSpeed;
-            const nextX = wp.positionX + step;
+            let nextX = wp.positionX + step;
             
             // Log photo-detector color scanning interrupt once it crosses customizable sensorPositionX threshold
             if (wp.positionX < sensorPositionX && nextX >= sensorPositionX) {
               triggerScanStats = true;
               scannedColor = wp.color;
+
+              if (waitingOnSensorRef.current) {
+                shouldHaltConveyor = true;
+                nextX = sensorPositionX; // Align perfectly under the suction gripper tip
+              }
+            } else if (wp.positionX >= sensorPositionX) {
+              // Lock workpiece perfectly at the sensor ONLY ifactively stalled awaiting photo-detector interlock
+              if (waitingOnSensorRef.current) {
+                shouldHaltConveyor = true;
+                nextX = sensorPositionX;
+              }
             }
 
             // Loop back workpiece if it passes workspace boundary bounds
@@ -759,10 +955,14 @@ export default function RobotWorkspaceIDE({
         return mapped;
       });
 
-      setSimulationState((prev) => {
-        const nextPos = (prev.blockPosition + 1.5 * conveyorSpeed) % 100;
-        return { ...prev, blockPosition: nextPos };
-      });
+      if (shouldHaltConveyor) {
+        setSimulationState((prev) => ({ ...prev, conveyorRunning: false }));
+      } else {
+        setSimulationState((prev) => {
+          const nextPos = (prev.blockPosition + 1.5 * conveyorSpeed) % 100;
+          return { ...prev, blockPosition: nextPos };
+        });
+      }
     }, 50);
 
     return () => clearInterval(tick);
@@ -788,25 +988,25 @@ export default function RobotWorkspaceIDE({
 
           <div className="flex items-center space-x-2.5">
             <FolderOpen className="w-4 h-4 text-blue-500" />
-            <span className="font-mono text-[10px] font-bold text-slate-400 tracking-wider">PROJECT_IDE_FILES</span>
+            <span className="font-mono text-[10px] font-bold text-slate-450 tracking-wider hidden lg:inline-block">PROJECT FILES</span>
           </div>
         </div>
         
         {/* Play/Stop & Reference Triggers */}
-        <div className="flex items-center space-x-1.5">
+        <div className="flex items-center space-x-1.5 shrink-0 select-none">
           {/* Reference Modal button */}
           <button
             onClick={() => setShowHelpModal(true)}
-            className="px-2.5 py-1 bg-[#0d0d0f] hover:bg-[#121215] border border-white/5 hover:border-white/10 rounded font-mono text-[10px] text-slate-400 hover:text-white flex items-center space-x-1 cursor-pointer transition-all"
+            className="px-2 py-0.5 bg-[#0d0d0f] hover:bg-[#121215] border border-white/5 hover:border-white/10 rounded font-mono text-[9px] text-slate-400 hover:text-white flex items-center space-x-1 cursor-pointer transition-all shrink-0"
             title="Open G-Code Command Reference Guide"
           >
-            <HelpCircle className="w-3.5 h-3.5 text-blue-400" />
-            <span className="hidden md:inline">Command Ref</span>
+            <HelpCircle className="w-3 h-3 text-blue-400" />
+            <span className="hidden lg:inline">Reference</span>
           </button>
 
           {/* Simulation Speed Dropdown Selector */}
-          <div className="flex items-center space-x-1 bg-[#0d0d0f] border border-white/5 rounded px-2 py-1 select-none">
-            <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider hidden sm:inline">Speed:</span>
+          <div className="flex items-center space-x-1 bg-[#0d0d0f] border border-white/5 rounded px-1.5 py-0.5 select-none shrink-0">
+            <span className="text-[8px] font-mono font-bold text-slate-500 uppercase tracking-wide hidden lg:inline">Speed:</span>
             <select
               value={simulationSpeed}
               onChange={(e) => setSimulationSpeed(Number(e.target.value))}
@@ -814,31 +1014,67 @@ export default function RobotWorkspaceIDE({
               className="bg-transparent text-slate-300 font-mono text-[9px] focus:outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               title="Execution step speed interval"
             >
-              <option value="2000" className="bg-[#141417]">0.5x (Slow)</option>
+              <option value="2000" className="bg-[#141417]">0.5x</option>
               <option value="1500" className="bg-[#141417]">0.75x</option>
-              <option value="1000" className="bg-[#141417]">1.0x (Normal)</option>
-              <option value="500" className="bg-[#141417]">2.0x (Fast)</option>
-              <option value="250" className="bg-[#141417]">4.0x (Turbo)</option>
+              <option value="1000" className="bg-[#141417]">1.0x</option>
+              <option value="500" className="bg-[#141417]">2.0x</option>
+              <option value="250" className="bg-[#141417]">4.0x</option>
             </select>
           </div>
 
+          {/* Debugging Suite Panel */}
+          {simulationState.isCompiled && (
+            <div className="flex bg-[#0d0d0f] p-0.5 rounded border border-white/5 space-x-1 items-center animate-in fade-in zoom-in duration-200 shrink-0">
+              {/* PLAY / RESUME or PAUSE Button */}
+              {simulationState.status === "running" ? (
+                <button
+                  onClick={pauseSimulation}
+                  title="Pause GCODE sequence"
+                  className="p-1 hover:text-amber-400 text-amber-500/70 hover:bg-[#1a1a24] rounded cursor-pointer transition-colors"
+                >
+                  <Pause className="w-3 h-3 fill-current" />
+                </button>
+              ) : simulationState.status === "paused" ? (
+                <button
+                  onClick={resumeSimulation}
+                  title="Resume GCODE sequence"
+                  className="p-1 hover:text-emerald-400 text-emerald-500/70 hover:bg-[#1a1a24] rounded cursor-pointer transition-colors"
+                >
+                  <Play className="w-3 h-3 fill-current" />
+                </button>
+              ) : null}
+
+              {/* SINGLE STEP LINE Button */}
+              {(simulationState.status === "paused" || simulationState.status === "idle") && (
+                <button
+                  onClick={stepSimulationLine}
+                  title="Single Step (Next Instruction)"
+                  className="p-1 hover:text-sky-400 text-slate-400 hover:bg-[#1a1a24] rounded cursor-pointer transition-all flex items-center space-x-1"
+                >
+                  <ChevronRight className="w-3 h-3" />
+                  <span className="text-[7.5px] font-mono font-semibold tracking-wider hidden xl:inline pt-0.5 pr-0.5">STEP</span>
+                </button>
+              )}
+            </div>
+          )}
+
           <button
             onClick={handleCompileAndRun}
-            className={`flex items-center space-x-1.5 px-3 py-1 font-mono text-[10px] font-bold rounded leading-none cursor-pointer border transition-all duration-300 ${
-              simulationState.isRunning
+            className={`flex items-center space-x-1 px-2.5 py-1 font-mono text-[9.5px] font-bold rounded cursor-pointer border transition-all duration-300 shrink-0 ${
+              (simulationState.isRunning || simulationState.status === "paused")
                 ? "bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/20"
                 : "bg-blue-600 hover:bg-blue-500 text-white border-blue-700 shadow-lg"
             }`}
           >
-            {simulationState.isRunning ? (
+            {(simulationState.isRunning || simulationState.status === "paused") ? (
               <>
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>STOP DIAGNOSTIC</span>
+                <Trash2 className="w-3 h-3" />
+                <span>STOP</span>
               </>
             ) : (
               <>
-                <Play className="w-3.5 h-3.5" />
-                <span>BUILD & FLASH</span>
+                <Play className="w-3 h-3" />
+                <span>FLASH</span>
               </>
             )}
           </button>
@@ -1023,11 +1259,14 @@ export default function RobotWorkspaceIDE({
             {/* Visual Editor line-numbers gutter */}
             <div className="bg-[#141417] px-2 py-4 border-r border-[#1e1e23] text-right text-slate-600 select-none space-y-0.5 leading-5 w-8 text-[10px] items-stretch">
               {activeFile.content.split("\n").map((_, lineIdx) => {
-                const isLineHighlight = simulationState.isRunning && simulationState.currentLine === lineIdx + 1;
+                const isActive = (simulationState.isRunning || simulationState.status === "paused") && simulationState.currentLine === lineIdx + 1;
+                const highlightClass = isActive
+                  ? (simulationState.status === "paused" ? "text-amber-400 font-bold" : "text-blue-400 font-bold")
+                  : "";
                 return (
                   <div
                     key={lineIdx}
-                    className={`transition-colors ${isLineHighlight ? "text-blue-400 font-bold" : ""}`}
+                    className={`transition-colors ${highlightClass}`}
                   >
                     {lineIdx + 1}
                   </div>
@@ -1046,11 +1285,15 @@ export default function RobotWorkspaceIDE({
               />
 
               {/* Line spotlight highlights for active execution coordinates */}
-              {simulationState.isRunning && activeFile.language === "gcode" && (
+              {(simulationState.isRunning || simulationState.status === "paused") && activeFile.language === "gcode" && (
                 <div 
-                  className="absolute left-0 right-0 h-5 bg-blue-550/10 border-l-2 border-blue-500 pointer-events-none transition-all duration-300"
+                  className={`absolute left-0 right-0 h-5 border-l-2 pointer-events-none transition-all duration-300 max-w-full ${
+                    simulationState.status === "paused" 
+                      ? "bg-amber-500/10 border-amber-500" 
+                      : "bg-blue-500/10 border-blue-500"
+                  }`}
                   style={{ 
-                    top: `${3 + (simulationState.currentLine - 1) * 20}px` 
+                    top: `${13 + (simulationState.currentLine - 1) * 20}px` 
                   }}
                 />
               )}

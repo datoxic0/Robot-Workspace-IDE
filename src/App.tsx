@@ -28,7 +28,9 @@ import {
   HelpCircle,
   Lightbulb,
   Settings,
-  Sliders
+  Sliders,
+  ChevronLeft,
+  ChevronRight
 } from "lucide-react";
 
 export default function App() {
@@ -97,6 +99,10 @@ export default function App() {
   const [selectedDesignTab, setSelectedDesignTab] = useState<"robot-designer" | "workspace-config" | "system-status">("robot-designer");
   const [activeMainTab, setActiveMainTab] = useState<"visualizer" | "ide" | "ai">("visualizer");
   const [designControlsExpanded, setDesignControlsExpanded] = useState<boolean>(false);
+
+  // High density retractable panel layout states
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(false);
+  const [rightCollapsed, setRightCollapsed] = useState<boolean>(false);
 
   // Serial Console simulation terminal logs logger
   const [logs, setLogs] = useState<TerminalLog[]>([
@@ -266,35 +272,61 @@ export default function App() {
       {/* 3. Main Interactive Dashboard Column Grid */}
       <main className="flex-1 p-3 grid grid-cols-1 xl:grid-cols-12 gap-3 min-h-0 overflow-hidden">
         
-        {/* Left Column: Mechanical Kinematics Visualizer (xl:col-span-5) */}
-        <div className={`xl:col-span-5 flex-col space-y-3 h-full min-h-0 ${activeMainTab === "visualizer" ? "flex" : "hidden"} xl:flex`}>
-          <div className="flex-1 min-h-0">
-            <CimWorkspaceVisualizer
-              joints={joints}
-              setJoints={setJoints}
-              simulationState={simulationState}
-              setSimulationState={setSimulationState}
-              workpieces={workpieces}
-              setWorkpieces={setWorkpieces}
-              robotDesign={robotDesign}
-              sortingStats={sortingStats}
-              setSortingStats={setSortingStats}
-              feedMode={feedMode}
-              setFeedMode={setFeedMode}
-              robotType={robotType}
-              setRobotType={setRobotType}
-              conveyorSpeed={conveyorSpeed}
-              setConveyorSpeed={setConveyorSpeed}
-              obstacleHeight={obstacleHeight}
-              setObstacleHeight={setObstacleHeight}
-              sensorPositionX={sensorPositionX}
-              setSensorPositionX={setSensorPositionX}
-            />
-          </div>
+        {/* Left Column: Mechanical Kinematics Visualizer (Custom-Retractable) */}
+        <div className={`${leftCollapsed ? "xl:col-span-1" : "xl:col-span-5"} flex-col h-full min-h-0 ${activeMainTab === "visualizer" ? "flex" : "hidden"} xl:flex transition-all duration-300`}>
+          {leftCollapsed ? (
+            <div className="h-full bg-[#141417] border border-white/5 rounded flex flex-col items-center py-4 space-y-4 shadow-xl shrink-0">
+              <button
+                onClick={() => setLeftCollapsed(false)}
+                className="p-1.5 hover:bg-white/10 rounded text-blue-400 hover:text-white cursor-pointer transition-colors"
+                title="Expand Workspace Simulator"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
+              <div className="flex-1 flex items-center justify-center">
+                <span className="font-mono text-[9px] font-bold text-slate-500 uppercase tracking-widest select-none [writing-mode:vertical-lr] rotate-180 flex items-center gap-2">
+                  <Workflow className="w-3.5 h-3.5 rotate-90 text-blue-500" />
+                  WORKSPACE SIMULATOR
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1 flex flex-col min-h-0">
+              <CimWorkspaceVisualizer
+                joints={joints}
+                setJoints={setJoints}
+                simulationState={simulationState}
+                setSimulationState={setSimulationState}
+                workpieces={workpieces}
+                setWorkpieces={setWorkpieces}
+                robotDesign={robotDesign}
+                sortingStats={sortingStats}
+                setSortingStats={setSortingStats}
+                feedMode={feedMode}
+                setFeedMode={setFeedMode}
+                robotType={robotType}
+                setRobotType={setRobotType}
+                conveyorSpeed={conveyorSpeed}
+                setConveyorSpeed={setConveyorSpeed}
+                obstacleHeight={obstacleHeight}
+                setObstacleHeight={setObstacleHeight}
+                sensorPositionX={sensorPositionX}
+                setSensorPositionX={setSensorPositionX}
+                activeFile={files[activeFileIndex]}
+                onFileChange={handleFileContentChange}
+                setLogs={setLogs}
+                onCollapse={() => setLeftCollapsed(true)}
+              />
+            </div>
+          )}
         </div>
 
-        {/* Middle Column: Hardware Code IDE (xl:col-span-4) */}
-        <div className={`xl:col-span-4 flex-col h-full min-h-0 ${activeMainTab === "ide" ? "flex" : "hidden"} xl:flex`}>
+        {/* Middle Column: Hardware Code IDE */}
+        <div className={`${
+          leftCollapsed && rightCollapsed ? "xl:col-span-10" :
+          leftCollapsed ? "xl:col-span-8" :
+          rightCollapsed ? "xl:col-span-6" : "xl:col-span-4"
+        } flex-col h-full min-h-0 ${activeMainTab === "ide" ? "flex" : "hidden"} xl:flex transition-all duration-300`}>
           <RobotWorkspaceIDE
             activeBoard={activeBoard}
             setActiveBoard={setActiveBoard}
@@ -323,14 +355,35 @@ export default function App() {
           />
         </div>
 
-        {/* Right Column: AI Robotic Assistant Chat (xl:col-span-3) */}
-        <div className={`xl:col-span-3 flex-col h-full min-h-0 ${activeMainTab === "ai" ? "flex" : "hidden"} xl:flex`}>
-          <AIPanel
-            activeBoard={activeBoard}
-            activeLanguage={activeLanguage}
-            currentCode={files[activeFileIndex]?.content || ""}
-            onInsertCode={handleInsertCodeFromAI}
-          />
+        {/* Right Column: AI Robotic Assistant Chat (Custom-Retractable) */}
+        <div className={`${rightCollapsed ? "xl:col-span-1" : "xl:col-span-3"} flex-col h-full min-h-0 ${activeMainTab === "ai" ? "flex" : "hidden"} xl:flex transition-all duration-300`}>
+          {rightCollapsed ? (
+            <div className="h-full bg-[#141417] border border-white/5 rounded flex flex-col items-center py-4 space-y-4 shadow-xl shrink-0">
+              <button
+                onClick={() => setRightCollapsed(false)}
+                className="p-1.5 hover:bg-white/10 rounded text-blue-400 hover:text-white cursor-pointer transition-colors"
+                title="Expand AI Assistant Panel"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <div className="flex-1 flex items-center justify-center">
+                <span className="font-mono text-[9px] font-bold text-slate-500 uppercase tracking-widest select-none [writing-mode:vertical-lr] rotate-180 flex items-center gap-2">
+                  <Cpu className="w-3.5 h-3.5 rotate-90 text-cyan-400 animate-pulse" />
+                  GEMINI AI COPILOT
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1 flex flex-col min-h-0">
+              <AIPanel
+                activeBoard={activeBoard}
+                activeLanguage={activeLanguage}
+                currentCode={files[activeFileIndex]?.content || ""}
+                onInsertCode={handleInsertCodeFromAI}
+                onCollapse={() => setRightCollapsed(true)}
+              />
+            </div>
+          )}
         </div>
       </main>
 

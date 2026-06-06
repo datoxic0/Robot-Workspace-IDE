@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from "react";
-import { RobotJoint, SimulationState, TargetPosition, CIMWorkpiece, RobotDesignConfig, CIMSortingStats } from "../types";
+import Markdown from "react-markdown";
+import { RobotJoint, SimulationState, TargetPosition, CIMWorkpiece, RobotDesignConfig, CIMSortingStats, WorkspaceFile, TerminalLog } from "../types";
 import { calculateForwardKinematics, solveInverseKinematics } from "../utils/kinematics";
-import { Play, Square, Settings, Eye, HelpCircle, Activity, Box, Zap, Scale, BarChart2, ShieldAlert, CheckCircle2, RotateCcw } from "lucide-react";
+import { Play, Square, Settings, Eye, HelpCircle, Activity, Box, Zap, Scale, BarChart2, ShieldAlert, CheckCircle2, RotateCcw, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Sliders, Check, Hammer, Power, RefreshCw, Cpu, Sparkles } from "lucide-react";
 
 interface CimWorkspaceVisualizerProps {
   joints: RobotJoint[];
@@ -23,6 +24,10 @@ interface CimWorkspaceVisualizerProps {
   setObstacleHeight: React.Dispatch<React.SetStateAction<number>>;
   sensorPositionX: number;
   setSensorPositionX: React.Dispatch<React.SetStateAction<number>>;
+  activeFile?: WorkspaceFile;
+  onFileChange?: (content: string) => void;
+  setLogs?: React.Dispatch<React.SetStateAction<TerminalLog[]>>;
+  onCollapse?: () => void;
 }
 
 export default function CimWorkspaceVisualizer({
@@ -44,13 +49,31 @@ export default function CimWorkspaceVisualizer({
   obstacleHeight,
   setObstacleHeight,
   sensorPositionX,
-  setSensorPositionX
+  setSensorPositionX,
+  activeFile,
+  onFileChange,
+  setLogs,
+  onCollapse
 }: CimWorkspaceVisualizerProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [isDraggingTarget, setIsDraggingTarget] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const [showAngles, setShowAngles] = useState(true);
-  const [activeTab, setActiveTab] = useState<"viewport" | "mechanics">("viewport");
+  const [activeTab, setActiveTab] = useState<"viewport" | "mechanics" | "pendant">("viewport");
+
+  // Teach Pendant States
+  const [jogMode, setJogMode] = useState<"JOINT" | "CARTESIAN">("CARTESIAN");
+  const [jogStepSize, setJogStepSize] = useState<number>(10);
+  const [cmdMode, setCmdMode] = useState<"G01" | "G00" | "M05" | "M03" | "G04">("G01");
+  const [suctionState, setSuctionState] = useState<boolean>(false);
+  const [conveyorState, setConveyorState] = useState<boolean>(false);
+  const [dwellMs, setDwellMs] = useState<number>(500);
+  const [feedrate, setFeedrate] = useState<number>(1200);
+
+  // Gemini AI Kinematics States
+  const [isSolvingIK, setIsSolvingIK] = useState(false);
+  const [ikResponse, setIkResponse] = useState<string>("");
+  const [ikError, setIkError] = useState<string | null>(null);
 
   // Origin point of physical robot base inside SVG plane (600x400)
   const baseX = 300;
@@ -110,6 +133,40 @@ export default function CimWorkspaceVisualizer({
   // Base is X=0, Y=0 (offset visually in SVG)
   const cartesianX = Math.round((endEffector.x - baseX) * 1.5);
   const cartesianY = Math.round((baseY - endEffector.y) * 1.5);
+
+  const handleSolveKinematicsWithAI = async () => {
+    setIsSolvingIK(true);
+    setIkError(null);
+    try {
+      const prov = localStorage.getItem("robot_ai_provider") || "gemini";
+      const key = prov === "openrouter" 
+        ? localStorage.getItem("robot_ai_openrouter_key") || ""
+        : localStorage.getItem("robot_ai_gemini_key") || "";
+      const model = localStorage.getItem("robot_ai_model") || (prov === "openrouter" ? "google/gemini-2.5-flash:free" : "gemini-3.5-flash");
+
+      const response = await fetch("/api/ai/kinematics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          joints: joints.map(j => ({ id: j.id, name: j.name, angle: j.angle })),
+          targetPosition: { x: cartesianX, y: cartesianY, z: 0 },
+          apiProvider: prov,
+          customApiKey: key,
+          selectedModel: model
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to calculate with status ${response.status}`);
+      }
+      const data = await response.json();
+      setIkResponse(data.text || "No kinematics solution data returned.");
+    } catch (err: any) {
+      console.error(err);
+      setIkError(err.message || "Error calling high-precision kinematic controller solver.");
+    } finally {
+      setIsSolvingIK(false);
+    }
+  };
 
   // SVG dimensions
   const svgWidth = 600;
@@ -264,6 +321,222 @@ export default function CimWorkspaceVisualizer({
     }
   };
 
+  const resolveKinematicsForPoint = (targetX: number, targetY: number) => {
+    if (robotType === "cartesian") {
+      let carriageX = targetX;
+      if (carriageX < 70) carriageX = 70;
+      if (carriageX > 530) carriageX = 530;
+      const targetJ1Angle = (carriageX - baseX) / 1.45;
+      
+      const railY = 110;
+      let targetPlungeY = targetY - 12;
+      if (targetPlungeY < railY + 80) targetPlungeY = railY + 80;
+      if (targetPlungeY > railY + 190) targetPlungeY = railY + 190;
+      
+      const targetPlungeHeight = targetPlungeY - railY;
+      const targetJ2Angle = ((targetPlungeHeight - 80) / 110) * 240 - 120;
+      
+      const nextJoints = joints.map((j) => {
+        if (j.id === "shoulder") return { ...j, angle: Math.round(targetJ1Angle) };
+        if (j.id === "elbow") return { ...j, angle: Math.round(targetJ2Angle) };
+        return j;
+      });
+      setJoints(nextJoints);
+      return;
+    }
+
+    if (robotType === "scara") {
+      const postHeight = 110;
+      const originX = baseX;
+      const originY = baseY - postHeight; // (300, 180)
+      
+      const totalMaxReach = robotDesign.shoulderLength + robotDesign.elbowLength;
+      let tx = targetX - originX;
+      let ty = targetY - originY - 35; // adjust for wrist plunge guiding
+      const dist = Math.hypot(tx, ty);
+      
+      if (dist > totalMaxReach) {
+        tx *= (totalMaxReach / dist) * 0.98;
+        ty *= (totalMaxReach / dist) * 0.98;
+      }
+      
+      const l1 = robotDesign.shoulderLength;
+      const l2 = robotDesign.elbowLength;
+      const cosAngle2 = (tx * tx + ty * ty - l1 * l1 - l2 * l2) / (2 * l1 * l2);
+      const sinAngle2 = Math.sqrt(Math.max(0, 1 - cosAngle2 * cosAngle2));
+      const angle2Rad = Math.atan2(sinAngle2, cosAngle2);
+      
+      const k1 = l1 + l2 * cosAngle2;
+      const k2 = l2 * sinAngle2;
+      const angle1Rad = Math.atan2(ty, tx) - Math.atan2(k2, k1);
+      
+      const a1Deg = (angle1Rad * 180) / Math.PI;
+      const a2Deg = (angle2Rad * 180) / Math.PI;
+      
+      const currentPlungeY = targetY - (originY + robotDesign.shoulderLength * Math.sin(angle1Rad) + robotDesign.elbowLength * Math.sin(angle1Rad + angle2Rad));
+      const targetJ3Angle = ((currentPlungeY - 25) / 30) * 240 - 120;
+      
+      const nextJoints = joints.map((j) => {
+        if (j.id === "shoulder") {
+          const bonded = Math.max(j.minAngle, Math.min(a1Deg, j.maxAngle));
+          return { ...j, angle: Math.round(bonded * 10) / 10 };
+        }
+        if (j.id === "elbow") {
+          const bonded = Math.max(j.minAngle, Math.min(a2Deg, j.maxAngle));
+          return { ...j, angle: Math.round(bonded * 10) / 10 };
+        }
+        if (j.id === "wrist") {
+          const bonded = Math.max(j.minAngle, Math.min(targetJ3Angle, j.maxAngle));
+          return { ...j, angle: Math.round(bonded * 10) / 10 };
+        }
+        return j;
+      });
+      setJoints(nextJoints);
+      return;
+    }
+
+    // Standard Articulated
+    const distToClick = Math.hypot(targetX - baseX, targetY - baseY);
+    const totalMaxReach = joints.slice(1).reduce((sum, j) => sum + j.length, 0);
+    
+    let targetX_ok = targetX;
+    let targetY_ok = targetY;
+
+    if (distToClick > totalMaxReach) {
+      const ratio = totalMaxReach / distToClick;
+      targetX_ok = baseX + (targetX - baseX) * ratio * 0.98;
+      targetY_ok = baseY + (targetY - baseY) * ratio * 0.98;
+    }
+
+    const solvedJoints = solveInverseKinematics(baseX, baseY, joints, { x: targetX_ok, y: targetY_ok });
+    setJoints(solvedJoints);
+  };
+
+  const jogAxis = (axisId: string, dir: number) => {
+    const step = jogStepSize * dir;
+    if (jogMode === "JOINT") {
+      setJoints(prev => prev.map(j => {
+        if (j.id === axisId) {
+          let nAngle = j.angle + step;
+          nAngle = Math.max(j.minAngle, Math.min(j.maxAngle, nAngle));
+          return { ...j, angle: Math.round(nAngle * 10) / 10 };
+        }
+        return j;
+      }));
+    } else {
+      let curX = endEffector.x;
+      let curY = endEffector.y;
+      
+      if (axisId === "X") {
+        curX += (step / 1.5);
+      } else if (axisId === "Z") {
+        curY -= (step / 1.5);
+      } else if (axisId === "B") {
+        setJoints(prev => prev.map(j => {
+          if (j.id === "base") {
+            let n = j.angle + step;
+            n = Math.max(j.minAngle, Math.min(j.maxAngle, n));
+            return { ...j, angle: Math.round(n * 10) / 10 };
+          }
+          return j;
+        }));
+        return;
+      } else if (axisId === "A") {
+        setJoints(prev => prev.map(j => {
+          if (j.id === "wrist") {
+            let n = j.angle + step;
+            n = Math.max(j.minAngle, Math.min(j.maxAngle, n));
+            return { ...j, angle: Math.round(n * 10) / 10 };
+          }
+          return j;
+        }));
+        return;
+      }
+      
+      resolveKinematicsForPoint(curX, curY);
+    }
+  };
+
+  const getCommandPreview = () => {
+    const fileLang = activeFile?.language || "gcode";
+    
+    const jBase = Math.round(joints[0].angle);
+    const jShoulder = Math.round(joints[1].angle);
+    const jElbow = Math.round(joints[2].angle);
+    const jWrist = Math.round(joints[3].angle);
+
+    if (cmdMode === "G01" || cmdMode === "G00") {
+      if (fileLang === "gcode") {
+        return `${cmdMode} X${cartesianX} Z${cartesianY} A${jWrist} B${jBase} F${feedrate}`;
+      } else if (fileLang === "arduino") {
+        return `moveJoints(${jBase}, ${jShoulder}, ${jElbow}, ${jWrist}); // Joint Jog Target`;
+      } else if (fileLang === "cim_script") {
+        return `MOVE_JOINT 1 TO ${jBase} DEGREES`;
+      } else {
+        return `move_joints(${jBase}, ${jShoulder}, ${jElbow}, ${jWrist}) # Joint Jog Target`;
+      }
+    }
+    
+    if (cmdMode === "M05") {
+      if (fileLang === "gcode") {
+        return `M05 P${suctionState ? 1 : 0}`;
+      } else if (fileLang === "arduino") {
+        return `digitalWrite(3, ${suctionState ? "HIGH" : "LOW"}); // Actuate Vacuum Solenoid`;
+      } else if (fileLang === "cim_script") {
+        return suctionState ? "ENGAGE_GRIPPER()" : "RELEASE_GRIPPER()";
+      } else {
+        return `suction_solenoid(${suctionState ? "True" : "False"})`;
+      }
+    }
+    
+    if (cmdMode === "M03") {
+      if (fileLang === "gcode") {
+        return `M03 S${conveyorState ? 1 : 0}`;
+      } else if (fileLang === "arduino") {
+        return `digitalWrite(4, ${conveyorState ? "HIGH" : "LOW"}); // Conveyor motor relay`;
+      } else if (fileLang === "cim_script") {
+        return conveyorState ? "START_CONVEYOR()" : "STOP_CONVEYOR()";
+      } else {
+        return `conveyor_motor(${conveyorState ? "True" : "False"})`;
+      }
+    }
+    
+    if (cmdMode === "G04") {
+      if (fileLang === "gcode") {
+        return `G04 P${dwellMs}`;
+      } else if (fileLang === "arduino") {
+        return `delay(${dwellMs});`;
+      } else if (fileLang === "cim_script") {
+        return `WAIT ${dwellMs}`;
+      } else {
+        return `time.sleep_ms(${dwellMs})`;
+      }
+    }
+    
+    return "";
+  };
+
+  const handleTeachPoint = (previewText: string) => {
+    if (!activeFile || !onFileChange) return;
+    const currentContent = activeFile.content;
+    const separator = currentContent.endsWith("\n") || currentContent === "" ? "" : "\n";
+    const nextContent = currentContent + separator + previewText + "\n";
+    onFileChange(nextContent);
+
+    if (setLogs) {
+      const timestamp = new Date().toLocaleTimeString();
+      setLogs((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(),
+          type: "success",
+          text: `[Teach Pendant] Inserted command => "${previewText}" into workspace active file.`,
+          timestamp
+        }
+      ]);
+    }
+  };
+
   // Convert workpiece positions and status dynamically using custom sensorPositionX
   const sensorTriggered = workpieces.some(wp => wp.positionX >= sensorPositionX - 10 && wp.positionX <= sensorPositionX + 10 && wp.status === "approaching");
 
@@ -289,10 +562,12 @@ export default function CimWorkspaceVisualizer({
         <div className="flex items-center space-x-2.5">
           <Activity className="w-4 h-4 text-blue-500 animate-pulse" />
           <span className="font-mono text-xs font-semibold text-slate-200 tracking-tight">SYS_VIEW_CIM</span>
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono leading-none ${
-            simulationState.status === "running" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-[0_0_8px_rgba(34,197,94,0.3)]" :
-            simulationState.status === "compiling" ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" :
-            "bg-[#0d0d0f] text-slate-500 border border-white/5"
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono leading-none border ${
+            simulationState.status === "running" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-[0_0_8px_rgba(34,197,94,0.3)]" :
+            simulationState.status === "paused" ? "bg-amber-500/10 text-amber-500 border-amber-500/20 shadow-[0_0_8px_rgba(245,158,11,0.2)]" :
+            simulationState.status === "compiling" ? "bg-blue-500/10 text-blue-400 border-blue-500/20 animate-pulse" :
+            simulationState.status === "error" ? "bg-rose-500/10 text-rose-500 border-rose-500/20 shadow-[0_0_8px_rgba(239,68,68,0.3)] animate-bounce" :
+            "bg-[#0d0d0f] text-slate-500 border-white/5"
           }`}>
             {simulationState.status.toUpperCase()}
           </span>
@@ -301,15 +576,24 @@ export default function CimWorkspaceVisualizer({
           <div className="flex bg-[#0d0d0f] p-0.5 rounded border border-white/5">
             <button
               onClick={() => setActiveTab("viewport")}
-              className={`px-2.5 py-0.5 font-mono text-[10px] rounded transition-colors ${
+              className={`px-2 py-0.5 font-mono text-[10px] rounded transition-colors ${
                 activeTab === "viewport" ? "bg-blue-600 text-white font-medium" : "text-slate-500 hover:text-slate-300"
               }`}
             >
               Workspace
             </button>
             <button
+              onClick={() => setActiveTab("pendant")}
+              className={`px-2 py-0.5 font-mono text-[10px] rounded transition-colors relative flex items-center space-x-1 ${
+                activeTab === "pendant" ? "bg-red-600 text-white font-medium" : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              <span>Pendant</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+            </button>
+            <button
               onClick={() => setActiveTab("mechanics")}
-              className={`px-2.5 py-0.5 font-mono text-[10px] rounded transition-colors ${
+              className={`px-2 py-0.5 font-mono text-[10px] rounded transition-colors ${
                 activeTab === "mechanics" ? "bg-blue-600 text-white font-medium" : "text-slate-500 hover:text-slate-300"
               }`}
             >
@@ -331,6 +615,15 @@ export default function CimWorkspaceVisualizer({
             >
               <HelpCircle className="w-3.5 h-3.5" />
             </button>
+            {onCollapse && (
+              <button
+                onClick={onCollapse}
+                title="Collapse Visualizer Panel"
+                className="p-1 rounded transition-colors text-slate-600 hover:text-rose-400 cursor-pointer"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -789,6 +1082,433 @@ export default function CimWorkspaceVisualizer({
             Drag blue crosshair to solve inverse kinematics!
           </div>
         </div>
+      ) : activeTab === "pendant" ? (
+        /* Teach Pendant Tab Content */
+        <div className="flex-1 bg-[#0c0c0e] p-3 flex flex-col justify-between overflow-y-auto space-y-3.5 select-none text-slate-100 font-mono">
+          
+          {/* Digital Readout Screen (DRO) */}
+          <div className="bg-[#152e25]/60 border border-emerald-500/10 p-3 rounded-lg shadow-[inset_0_2px_12px_rgba(16,185,129,0.04)] relative">
+            <div className="absolute top-2 right-2.5 flex items-center space-x-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-[7.5px] text-emerald-500 font-bold tracking-widest">DRO_LIVE_TELEMETRY</span>
+            </div>
+            <h4 className="text-[9.5px] font-bold text-emerald-400 uppercase mb-2.5 flex items-center gap-1">
+              <RefreshCw className="w-3.5 h-3.5 text-emerald-500 animate-spin-slow" />
+              <span>Digital Read-Out Console</span>
+            </h4>
+            
+            <div className="grid grid-cols-2 gap-3">
+              {/* Cartesian Coordinates Tool Center Point */}
+              <div className="bg-[#0b1a15] rounded border border-emerald-500/10 p-2 space-y-1">
+                <div className="text-[8px] text-emerald-500/80 font-semibold tracking-wider">TOOL CENTER POINT (TCP)</div>
+                <div className="grid grid-cols-2 text-xs font-bold font-mono">
+                  <div className="text-emerald-300">X: <span className="bg-emerald-950 px-1 py-0.5 rounded text-[11px]">{cartesianX} <span className="text-[7.5px] text-emerald-500">mm</span></span></div>
+                  <div className="text-emerald-300">Z: <span className="bg-emerald-950 px-1 py-0.5 rounded text-[11px]">{cartesianY} <span className="text-[7.5px] text-emerald-500">mm</span></span></div>
+                </div>
+              </div>
+              
+              {/* Active Robot joint angles */}
+              <div className="bg-[#0b1a15] rounded border border-emerald-500/10 p-2 space-y-1">
+                <div className="text-[8px] text-emerald-500/80 font-semibold tracking-wider">JOINT SPHERES (ANGLES)</div>
+                <div className="grid grid-cols-2 gap-x-1 text-[9.5px] text-emerald-300 font-medium">
+                  <div>Base B: <span className="text-emerald-400 font-bold">{Math.round(joints[0].angle)}°</span></div>
+                  <div>Shld J1: <span className="text-emerald-400 font-bold">{Math.round(joints[1].angle)}°</span></div>
+                  <div>Elb J2: <span className="text-emerald-400 font-bold">{Math.round(joints[2].angle)}°</span></div>
+                  <div>Wrst J3: <span className="text-emerald-400 font-bold">{Math.round(joints[3].angle)}°</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Jog Config Controls Bar */}
+          <div className="grid grid-cols-2 gap-3.5 bg-[#141417] p-2.5 rounded-lg border border-white/5">
+            <div>
+              <label className="text-[8px] text-slate-500 font-bold uppercase tracking-wider block mb-1">Jog Frame Standard</label>
+              <div className="flex bg-[#0d0d0f] p-0.5 rounded border border-white/5">
+                <button
+                  onClick={() => setJogMode("CARTESIAN")}
+                  className={`flex-1 text-[9px] py-1 rounded transition-colors uppercase ${
+                    jogMode === "CARTESIAN" ? "bg-red-600 text-white font-bold" : "text-slate-400 hover:text-slate-100"
+                  }`}
+                >
+                  Cartesian
+                </button>
+                <button
+                  onClick={() => setJogMode("JOINT")}
+                  className={`flex-1 text-[9px] py-1 rounded transition-colors uppercase ${
+                    jogMode === "JOINT" ? "bg-red-600 text-white font-bold" : "text-slate-400 hover:text-slate-100"
+                  }`}
+                >
+                  Joints
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[8px] text-slate-500 font-bold uppercase tracking-wider block mb-1">Jog Increment Size</label>
+              <div className="flex bg-[#0d0d0f] p-0.5 rounded border border-white/5 gap-0.5 font-mono text-[9.5px]">
+                {[1, 5, 10, 25].map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setJogStepSize(s)}
+                    className={`flex-1 py-1 rounded transition-colors inline-block ${
+                      jogStepSize === s ? "bg-slate-700 text-white font-bold" : "text-slate-500 hover:text-slate-300"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Manual Axis Jogging Buttons Grid */}
+          <div className="bg-[#101012] p-2.5 rounded-lg border border-white/5 space-y-2">
+            <div className="text-[8.5px] text-slate-400 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5 border-b border-white/5 pb-1">
+              <Sliders className="w-3.5 h-3.5 text-red-500" />
+              <span>Link Jogging Actuators ({jogMode} Mode)</span>
+            </div>
+
+            {jogMode === "CARTESIAN" ? (
+              <div className="grid grid-cols-2 gap-2 text-[10px]">
+                {/* Cartesian Jog Row X */}
+                <div className="flex items-center justify-between bg-[#141417] p-1.5 rounded border border-white/5">
+                  <span className="font-semibold text-slate-400">Cartesian X</span>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => { jogAxis("X", -1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-red-500 font-black cursor-pointer font-mono"
+                    >
+                      X-
+                    </button>
+                    <button
+                      onClick={() => { jogAxis("X", 1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-emerald-400 font-black cursor-pointer font-mono"
+                    >
+                      X+
+                    </button>
+                  </div>
+                </div>
+
+                {/* Cartesian Jog Row Z */}
+                <div className="flex items-center justify-between bg-[#141417] p-1.5 rounded border border-white/5">
+                  <span className="font-semibold text-slate-400">Cartesian Z</span>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => { jogAxis("Z", -1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-red-500 font-black cursor-pointer font-mono"
+                    >
+                      Z-
+                    </button>
+                    <button
+                      onClick={() => { jogAxis("Z", 1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-emerald-400 font-black cursor-pointer font-mono"
+                    >
+                      Z+
+                    </button>
+                  </div>
+                </div>
+
+                {/* Waist Base Sweep B */}
+                <div className="flex items-center justify-between bg-[#141417] p-1.5 rounded border border-white/5">
+                  <span className="font-semibold text-slate-400">Waist (Base B)</span>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => { jogAxis("B", -1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-red-500 font-black cursor-pointer font-mono"
+                    >
+                      B-
+                    </button>
+                    <button
+                      onClick={() => { jogAxis("B", 1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-emerald-400 font-black cursor-pointer font-mono"
+                    >
+                      B+
+                    </button>
+                  </div>
+                </div>
+
+                {/* Wrist Pitch Alignment A */}
+                <div className="flex items-center justify-between bg-[#141417] p-1.5 rounded border border-white/5">
+                  <span className="font-semibold text-slate-400">Wrist (Pitch A)</span>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => { jogAxis("A", -1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-red-500 font-black cursor-pointer font-mono"
+                    >
+                      A-
+                    </button>
+                    <button
+                      onClick={() => { jogAxis("A", 1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-emerald-400 font-black cursor-pointer font-mono"
+                    >
+                      A+
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2 text-[10px]">
+                {/* Joint axis 1 */}
+                <div className="flex items-center justify-between bg-[#141417] p-1.5 rounded border border-white/5">
+                  <span className="font-semibold text-slate-400">B (Waist)</span>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => { jogAxis("base", -1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-red-500 font-black cursor-pointer"
+                    >
+                      B-
+                    </button>
+                    <button
+                      onClick={() => { jogAxis("base", 1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-emerald-400 font-black cursor-pointer"
+                    >
+                      B+
+                    </button>
+                  </div>
+                </div>
+
+                {/* Joint axis 2 */}
+                <div className="flex items-center justify-between bg-[#141417] p-1.5 rounded border border-white/5">
+                  <span className="font-semibold text-slate-400">J1 (Shoulder)</span>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => { jogAxis("shoulder", -1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-red-500 font-black cursor-pointer"
+                    >
+                      J1-
+                    </button>
+                    <button
+                      onClick={() => { jogAxis("shoulder", 1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-emerald-400 font-black cursor-pointer"
+                    >
+                      J1+
+                    </button>
+                  </div>
+                </div>
+
+                {/* Joint axis 3 */}
+                <div className="flex items-center justify-between bg-[#141417] p-1.5 rounded border border-white/5">
+                  <span className="font-semibold text-slate-400">J2 (Elbow)</span>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => { jogAxis("elbow", -1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-red-500 font-black cursor-pointer"
+                    >
+                      J2-
+                    </button>
+                    <button
+                      onClick={() => { jogAxis("elbow", 1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-emerald-400 font-black cursor-pointer"
+                    >
+                      J2+
+                    </button>
+                  </div>
+                </div>
+
+                {/* Joint axis 4 */}
+                <div className="flex items-center justify-between bg-[#141417] p-1.5 rounded border border-white/5">
+                  <span className="font-semibold text-slate-400">J3 (Wrist)</span>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => { jogAxis("wrist", -1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-red-500 font-black cursor-pointer"
+                    >
+                      J3-
+                    </button>
+                    <button
+                      onClick={() => { jogAxis("wrist", 1); }}
+                      className="w-8 h-6 bg-[#222226] hover:bg-slate-700 border border-white/5 rounded text-emerald-400 font-black cursor-pointer"
+                    >
+                      J3+
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Core Hardware Manual Relays Toggles */}
+          <div className="grid grid-cols-2 gap-3 bg-[#101012] p-2.5 rounded-lg border border-white/5">
+            <button
+              onClick={() => {
+                const nextState = !simulationState.hasBlock;
+                setSimulationState(p => ({ ...p, hasBlock: nextState }));
+                setSuctionState(nextState);
+              }}
+              className={`flex items-center justify-center space-x-2 py-1.5 px-3 rounded text-[9px] font-mono font-bold tracking-tight border uppercase transition-all cursor-pointer ${
+                simulationState.hasBlock
+                  ? "bg-red-500/10 text-red-400 border-red-500/30 shadow-[0_0_8px_rgba(239,68,68,0.15)]"
+                  : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-white/5"
+              }`}
+            >
+              <Power className={`w-3.5 h-3.5 ${simulationState.hasBlock ? "text-red-400 animate-pulse" : "text-slate-400"}`} />
+              <span>Vacuum Solenoid: {simulationState.hasBlock ? "ON (HOLD)" : "OFF"}</span>
+            </button>
+
+            <button
+              onClick={() => {
+                const nextState = !simulationState.conveyorRunning;
+                setSimulationState(p => ({ ...p, conveyorRunning: nextState }));
+                setConveyorState(nextState);
+              }}
+              className={`flex items-center justify-center space-x-2 py-1.5 px-3 rounded text-[9px] font-mono font-bold tracking-tight border uppercase transition-all cursor-pointer ${
+                simulationState.conveyorRunning
+                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-[0_0_8px_rgba(34,197,94,0.15)]"
+                  : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-white/5"
+              }`}
+            >
+              <Power className={`w-3.5 h-3.5 ${simulationState.conveyorRunning ? "text-emerald-400 animate-pulse" : "text-slate-400"}`} />
+              <span>Conveyor Relay: {simulationState.conveyorRunning ? "RUNNING" : "HALTED"}</span>
+            </button>
+          </div>
+
+          {/* Interactive G-Code Command Builder */}
+          <div className="bg-[#141417] p-3 rounded-lg border border-white/5 space-y-3">
+            <div className="text-[8.5px] text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1.5 border-b border-white/5 pb-1 block">
+              <Hammer className="w-3.5 h-3.5 text-blue-500" />
+              <span>Teach-In Program Builder Cmd Selector</span>
+            </div>
+
+            {/* Select instruction category */}
+            <div className="grid grid-cols-5 gap-1 text-[8px] font-mono">
+              {(["G01", "G00", "M05", "M03", "G04"] as const).map((m) => {
+                const label = m === "G01" ? "G01 Move" : m === "G00" ? "G00 Rapid" : m === "M05" ? "M05 Vac" : m === "M03" ? "M03 Conv" : "G04 Delay";
+                return (
+                  <button
+                    key={m}
+                    onClick={() => { setCmdMode(m); }}
+                    className={`py-1 rounded text-center font-bold tracking-tighter uppercase transition-colors border cursor-pointer ${
+                      cmdMode === m
+                        ? "bg-blue-600 text-white border-blue-500"
+                        : "bg-[#0d0d0f] hover:bg-[#1a1a20] text-slate-400 border-white/5"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* command parameters input based on user selected type */}
+            <div className="bg-[#0b0c0e] p-2 rounded border border-white/5 text-[9px] text-slate-400 min-h-[50px] flex items-center">
+              {cmdMode === "G01" && (
+                <div className="w-full space-y-2">
+                  <div className="flex justify-between items-center text-[8.5px] uppercase">
+                    <span>Target Feedrate Parameter</span>
+                    <span className="text-blue-400 font-bold">{feedrate} mm/min</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="300"
+                    max="3000"
+                    step="100"
+                    value={feedrate}
+                    onChange={(e) => { setFeedrate(parseInt(e.target.value)); }}
+                    className="w-full h-1 bg-[#1a1a1e] rounded appearance-none cursor-pointer accent-blue-500"
+                  />
+                  <div className="text-[7.5px] text-slate-500 mt-1">Linear G01 moves are used for precise joint trajectory motions.</div>
+                </div>
+              )}
+
+              {cmdMode === "G00" && (
+                <div className="w-full text-center py-2 text-[8px] uppercase text-amber-500 font-semibold tracking-wider">
+                  ⚠️ TRAVEL SPEED ACTIVE: RAPID CO-SYNCHRONOUS MOVEMENTS AT MAXIMUM SPEED FACTOR!
+                </div>
+              )}
+
+              {cmdMode === "M05" && (
+                <div className="w-full flex items-center justify-between">
+                  <span>Change Vacuum state target:</span>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => { setSuctionState(true); }}
+                      className={`px-3 py-1 text-[8.5px] font-bold rounded border ${
+                        suctionState ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-[#18181b] text-slate-500 border-white/5"
+                      }`}
+                    >
+                      P1 (HOLD)
+                    </button>
+                    <button
+                      onClick={() => { setSuctionState(false); }}
+                      className={`px-3 py-1 text-[8.5px] font-bold rounded border ${
+                        !suctionState ? "bg-slate-700 text-white border-slate-600" : "bg-[#18181b] text-slate-500 border-white/5"
+                      }`}
+                    >
+                      P0 (RELEASE)
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {cmdMode === "M03" && (
+                <div className="w-full flex items-center justify-between">
+                  <span>Conveyor motor status signal target:</span>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => { setConveyorState(true); }}
+                      className={`px-3 py-1 text-[8.5px] font-bold rounded border ${
+                        conveyorState ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-[#18181b] text-slate-500 border-white/5"
+                      }`}
+                    >
+                      S1 (RUN)
+                    </button>
+                    <button
+                      onClick={() => { setConveyorState(false); }}
+                      className={`px-3 py-1 text-[8.5px] font-bold rounded border ${
+                        !conveyorState ? "bg-slate-700 text-white border-slate-600" : "bg-[#18181b] text-slate-500 border-white/5"
+                      }`}
+                    >
+                      S0 (HALT)
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {cmdMode === "G04" && (
+                <div className="w-full space-y-2">
+                  <div className="flex justify-between items-center text-[8.5px] uppercase">
+                    <span>Milling Dwell Delay Duration</span>
+                    <span className="text-amber-400 font-bold">{dwellMs} ms</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="100"
+                    max="2000"
+                    step="50"
+                    value={dwellMs}
+                    onChange={(e) => { setDwellMs(parseInt(e.target.value)); }}
+                    className="w-full h-1 bg-[#1a1a1e] rounded appearance-none cursor-pointer accent-amber-500"
+                  />
+                  <div className="text-[7.5px] text-slate-500 mt-1">Dwells are recommended to wait for solenoid relays stabilizing pressures.</div>
+                </div>
+              )}
+            </div>
+
+            {/* Live Interactive syntax colored code line preview */}
+            <div className="space-y-1 block">
+              <span className="text-[8px] text-slate-500 font-bold uppercase tracking-wider block">Script Code Generation Line Preview ({activeFile?.name || "*.gcode"})</span>
+              <div className="bg-[#09090b] text-[10px] py-1.5 px-3 rounded font-mono border border-white/5 flex items-center justify-between shadow-inner">
+                <span className="text-blue-400 font-semibold tracking-wide select-all">{getCommandPreview()}</span>
+                <span className="text-[8px] text-slate-500 font-bold uppercase">{activeFile?.language || "gcode"} syntax</span>
+              </div>
+            </div>
+
+            {/* Teach Point Insertion Action Trigger Button */}
+            <button
+              onClick={() => { handleTeachPoint(getCommandPreview()); }}
+              disabled={!activeFile || !onFileChange}
+              className={`w-full py-2 px-4 rounded font-mono font-bold text-xs flex items-center justify-center space-x-1 border shadow transition-all ${
+                activeFile && onFileChange
+                  ? "bg-red-600 hover:bg-red-700 border-red-500 text-white cursor-pointer active:scale-[0.99] hover:shadow-[0_0_12px_rgba(239,68,68,0.2)]"
+                  : "bg-slate-800 text-slate-500 border-white/5 cursor-not-allowed opacity-50"
+              }`}
+            >
+              <div className="w-2.5 h-2.5 rounded-full bg-white animate-ping mr-2.5" />
+              <span>🔴 Teach Instruction Point</span>
+            </button>
+          </div>
+        </div>
       ) : (
         /* Stress & Physics Tab Content */
         <div className="flex-1 bg-[#0d0d0f] p-4 overflow-y-auto">
@@ -872,6 +1592,76 @@ export default function CimWorkspaceVisualizer({
                   </span>
                 </div>
               </div>
+            </div>
+
+            {/* Dynamic AI Kinematics Solver Console */}
+            <div className="col-span-2 bg-[#141417]/90 border border-blue-500/10 p-3 rounded-lg shadow-[inset_0_1px_8px_rgba(59,130,246,0.03)] space-y-2 mt-1">
+              <div className="flex justify-between items-center">
+                <div className="flex items-center space-x-2">
+                  <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+                  <span className="text-[10px] font-mono font-bold text-slate-200 uppercase tracking-wider">
+                    {localStorage.getItem("robot_ai_provider") === "openrouter" ? "OpenRouter Free Kinematics Assistant" : "Gemini High-Precision Kinematics Solver"}
+                  </span>
+                </div>
+                <div className="text-[8px] font-mono text-slate-500 font-semibold uppercase">TCP TARGET: X={cartesianX}mm, Z={cartesianY}mm</div>
+              </div>
+
+              {ikResponse ? (
+                <div className="space-y-2">
+                  <div className="bg-[#09090b] text-[10px] font-sans p-3 rounded border border-white/5 overflow-y-auto max-h-[140px] text-slate-300 leading-relaxed select-text markdown-body">
+                    <Markdown>{ikResponse}</Markdown>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => setIkResponse("")}
+                      className="px-2.5 py-1 bg-[#1d1d22] text-slate-400 hover:text-slate-200 transition-colors rounded text-[9px] font-mono border border-white/5 flex items-center gap-1 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Clear Solution</span>
+                    </button>
+                    <button
+                      disabled={isSolvingIK}
+                      onClick={handleSolveKinematicsWithAI}
+                      className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white transition-all rounded text-[9px] font-mono font-medium flex items-center gap-1 cursor-pointer shadow-md"
+                    >
+                      {isSolvingIK ? <Cpu className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                      <span>Recalculate Inverse Kinematics</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-[#0d0d0f] border border-white/5 rounded p-4 flex flex-col items-center justify-center text-center space-y-2.5">
+                  <Cpu className={`w-8 h-8 text-blue-500/40 ${isSolvingIK ? "animate-spin" : ""}`} />
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-mono text-slate-300 font-bold uppercase tracking-wide">
+                      {localStorage.getItem("robot_ai_provider") === "openrouter" ? "OpenRouter Kinematics pipeline active" : "Gemini solver pipeline active"}
+                    </p>
+                    <p className="text-[9px] text-slate-500 max-w-md font-sans">
+                      Let {localStorage.getItem("robot_ai_provider") === "openrouter" ? "OpenRouter" : "Gemini"} analyze your current joint structure and tool coordinate vector to solve the exact trigonometric parameters and guide trajectory motion calculations.
+                    </p>
+                  </div>
+                  {ikError && (
+                    <p className="text-[9px] text-rose-400 font-mono bg-rose-500/5 px-2.5 py-1 rounded border border-rose-500/10">⚠️ {ikError}</p>
+                  )}
+                  <button
+                    disabled={isSolvingIK}
+                    onClick={handleSolveKinematicsWithAI}
+                    className="inline-flex items-center space-x-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded text-[10px] font-mono font-bold tracking-wide shadow-lg border border-blue-500/30 transition-all cursor-pointer active:scale-[0.98]"
+                  >
+                    {isSolvingIK ? (
+                      <>
+                        <Cpu className="w-3.5 h-3.5 animate-spin" />
+                        <span>Querying Kinematics Pipeline...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5 text-blue-200 animate-pulse" />
+                        <span>Solve Kinematics Math with AI</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

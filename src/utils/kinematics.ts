@@ -52,6 +52,17 @@ export function solveInverseKinematics(
   maxIterations = 50,
   tolerance = 0.5
 ): RobotJoint[] {
+  // Guard against invalid targets to prevent NaN poisoning in kinematics state
+  if (
+    !target ||
+    isNaN(target.x) ||
+    !isFinite(target.x) ||
+    isNaN(target.y) ||
+    !isFinite(target.y)
+  ) {
+    return joints;
+  }
+
   // Clone joints to avoid mutating active state during search
   const resultJoints = joints.map(j => ({ ...j }));
   
@@ -71,8 +82,10 @@ export function solveInverseKinematics(
     // Iterate backwards through the active joint links (from tool down to shoulder J1)
     // resultJoints index matches coords indexing (0 base, 1 shoulder J1, 2 elbow J2, 3 wrist J3, 4 tool J4)
     for (let i = resultJoints.length - 2; i >= 1; i--) {
-      const jointCoord = coords[i]; // Position of current joint we are rotating around
-      const currentEffector = getFkCoords()[resultJoints.length - 1]; // Effector position
+      // Retrieve fresh coordinates for each joint angle adjust step
+      const freshCoords = getFkCoords();
+      const jointCoord = freshCoords[i - 1]; // Position of current joint we are rotating around
+      const currentEffector = freshCoords[freshCoords.length - 1]; // Effector position
 
       // Vector from joint to effector
       const eX = currentEffector.x - jointCoord.x;
@@ -93,12 +106,22 @@ export function solveInverseKinematics(
       // Deg angle alteration
       const diffDeg = (diffAngle * 180) / Math.PI;
 
-      // Adjust joint angle
-      let newAngle = resultJoints[i].angle + diffDeg;
+      // Guard against NaN difference calculations
+      if (isNaN(diffDeg) || !isFinite(diffDeg)) {
+        continue;
+      }
+
+      // Adjust joint angle with a damping factor for smooth, non-oscillating trajectory convergence
+      const dampingFactor = 0.55;
+      let newAngle = resultJoints[i].angle + diffDeg * dampingFactor;
 
       // Apply physical mechanical boundaries
       newAngle = Math.max(resultJoints[i].minAngle, Math.min(newAngle, resultJoints[i].maxAngle));
-      resultJoints[i].angle = Math.round(newAngle * 10) / 10; // Round to 1 decimal place
+      
+      // Secondary NaN protection before rounding
+      if (!isNaN(newAngle) && isFinite(newAngle)) {
+        resultJoints[i].angle = Math.round(newAngle * 10) / 10; // Round to 1 decimal place
+      }
     }
   }
 

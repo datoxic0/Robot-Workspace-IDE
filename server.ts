@@ -33,62 +33,127 @@ function getAiClient(): GoogleGenAI {
 }
 
 // API endpoint for robotic assistance and code generation
-async function generateContentWithRetryAndFallback(params: {
+async function generateAIResponse(params: {
+  apiProvider?: "gemini" | "openrouter";
+  customApiKey?: string;
+  selectedModel?: string;
   contents: string;
   systemInstruction?: string;
   temperature?: number;
 }) {
-  const ai = getAiClient();
-  const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
-  let lastError: any = null;
+  const provider = params.apiProvider || "gemini";
+  let temp = params.temperature !== undefined ? params.temperature : 0.2;
 
-  for (const model of modelsToTry) {
-    let attempts = 0;
-    const maxAttempts = 3;
-    let delay = 1000;
+  if (provider === "openrouter") {
+    const apiKey = params.customApiKey || process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error("OpenRouter API Key is missing. Please configuration it in the Settings panel in the app UI.");
+    }
 
-    while (attempts < maxAttempts) {
+    const modelName = params.selectedModel || "google/gemini-2.5-flash:free";
+    console.log(`[OpenRouter Router] Model: ${modelName}, max_tokens capped at 180`);
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://ai.studio/build",
+        "X-Title": "Robot Workspace IDE"
+      },
+      body: JSON.stringify({
+        model: modelName,
+        messages: [
+          ...(params.systemInstruction ? [{ role: "system", content: params.systemInstruction }] : []),
+          { role: "user", content: params.contents }
+        ],
+        max_tokens: 180, // strict 180-token cap for maximum usage by standard users
+        temperature: temp
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      let parsedError = "Unknown error";
       try {
-        console.log(`Sending content request to model: ${model} (attempt ${attempts + 1}/${maxAttempts})`);
-        const response = await ai.models.generateContent({
-          model,
-          contents: params.contents,
-          config: {
-            systemInstruction: params.systemInstruction,
-            temperature: params.temperature,
-          },
-        });
-        return response;
-      } catch (err: any) {
-        lastError = err;
-        attempts++;
-        const errMessage = String(err?.message || err || "").toLowerCase();
-        
-        const isTemporary = errMessage.includes("503") || 
-                            errMessage.includes("unavailable") || 
-                            errMessage.includes("429") || 
-                            errMessage.includes("resource_exhausted") ||
-                            errMessage.includes("high demand") ||
-                            errMessage.includes("busy");
+        const parsed = JSON.parse(errText);
+        parsedError = parsed?.error?.message || parsed?.error || errText;
+      } catch (pe) {
+        parsedError = errText;
+      }
+      throw new Error(`OpenRouter API Failure: ${parsedError}`);
+    }
 
-        if (isTemporary && attempts < maxAttempts) {
-          console.warn(`Gemini API connection error on ${model} (attempt ${attempts}/${maxAttempts}), retrying in ${delay}ms... Details:`, errMessage);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          delay *= 2;
-        } else {
-          console.error(`Gemini API error for model ${model}:`, errMessage);
-          break;
-        }
+    const data = await response.json();
+    console.log("[OpenRouter Response]", JSON.stringify(data));
+
+    if (data?.error) {
+      const errMsg = data.error.message || data.error.metadata || JSON.stringify(data.error);
+      throw new Error(`OpenRouter API Error: ${errMsg}`);
+    }
+
+    if (!data.choices || data.choices.length === 0) {
+      throw new Error(`Received empty choices list from OpenRouter: ${JSON.stringify(data)}`);
+    }
+
+    let content = data.choices[0]?.message?.content;
+    if (content === undefined || content === null || content === "") {
+      content = data.choices[0]?.message?.reasoning;
+    }
+    if (content === undefined || content === null || content === "") {
+      const details = data.choices[0]?.message?.reasoning_details;
+      if (Array.isArray(details)) {
+        content = details.map((d: any) => d.text || "").join("\n").trim();
+      } else if (details && typeof details === "object") {
+        content = details.text || JSON.stringify(details);
       }
     }
-  }
 
-  throw lastError || new Error("Failed to communicate with any Gemini model.");
+    if (content === undefined || content === null || content === "") {
+      throw new Error(`OpenRouter response choice didn't contain content or reasoning string: ${JSON.stringify(data)}`);
+    }
+
+    return { text: content };
+  } else {
+    // Gemini standard path for premium monied clients
+    const apiKey = params.customApiKey || process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("Gemini API Key is missing. Please set GEMINI_API_KEY environment variable or supply a custom key in the Settings panel.");
+    }
+
+    const modelName = params.selectedModel || "gemini-3.5-flash";
+    console.log(`[Gemini Router] Model: ${modelName}`);
+
+    let ai;
+    if (params.customApiKey) {
+      ai = new GoogleGenAI({
+        apiKey: params.customApiKey,
+        httpOptions: {
+          headers: {
+            "User-Agent": "aistudio-build",
+          },
+        },
+      });
+    } else {
+      ai = getAiClient();
+    }
+
+    const res = await ai.models.generateContent({
+      model: modelName,
+      contents: params.contents,
+      config: {
+        systemInstruction: params.systemInstruction,
+        temperature: temp,
+      },
+    });
+
+    return { text: res.text };
+  }
 }
 
 app.post("/api/ai/assist", async (req: express.Request, res: express.Response) => {
   try {
-    const { prompt, systemInstruction, codeContext, language, board } = req.body;
+    const { prompt, systemInstruction, codeContext, language, board, apiProvider, customApiKey, selectedModel } = req.body;
     
     let compiledPrompt = prompt;
     if (codeContext) {
@@ -99,7 +164,10 @@ app.post("/api/ai/assist", async (req: express.Request, res: express.Response) =
       "You are an elite expert in industrial robotics, robotic arms, Computer Integrated Manufacturing (CIM), board microcontrollers (Arduino, ESP32, ESP8266, STM32, ARM Cortex-M), and micro-programming languages (MicroPython, Arduino Dialect C++, G-code). " +
       "Help the user program, design, configure, or solve kinematics for their robots. Be precise, highly structured, and technical.";
 
-    const response = await generateContentWithRetryAndFallback({
+    const response = await generateAIResponse({
+      apiProvider,
+      customApiKey,
+      selectedModel,
       contents: compiledPrompt,
       systemInstruction: systemInstruction || defaultSystemInstruction,
       temperature: 0.2,
@@ -115,7 +183,7 @@ app.post("/api/ai/assist", async (req: express.Request, res: express.Response) =
 // API endpoint for smart kinematics solving recommendations
 app.post("/api/ai/kinematics", async (req: express.Request, res: express.Response) => {
   try {
-    const { joints, targetPosition } = req.body;
+    const { joints, targetPosition, apiProvider, customApiKey, selectedModel } = req.body;
     
     const prompt = `Solve Inverse Kinematics guidelines or joint parameters.
 Current configuration of robotic arm:
@@ -123,7 +191,10 @@ Joints count: ${joints?.length || 4}
 Target Cartesian Coordinates: X=${targetPosition?.x || 120}, Y=${targetPosition?.y || 120}, Z=${targetPosition?.z || 0}.
 Provide the trigonometric formula summary, step-by-step joint angle adjustments in degrees, and speed suggestions for smooth trajectory planning. Keep descriptions concise, professional, and mathematically rigorous.`;
 
-    const response = await generateContentWithRetryAndFallback({
+    const response = await generateAIResponse({
+      apiProvider,
+      customApiKey,
+      selectedModel,
       contents: prompt,
       temperature: 0.1,
     });

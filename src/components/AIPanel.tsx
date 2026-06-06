@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import Markdown from "react-markdown";
-import { Cpu, RotateCcw, AlertTriangle, Send, Sparkles, Code2, Flame, Wrench } from "lucide-react";
+import { Cpu, RotateCcw, AlertTriangle, Send, Sparkles, Code2, Flame, Wrench, ChevronRight, Settings } from "lucide-react";
 import { BoardConfig, ProgramLanguageConfig } from "../types";
 
 interface AIPanelProps {
@@ -8,14 +8,47 @@ interface AIPanelProps {
   activeLanguage: ProgramLanguageConfig;
   currentCode: string;
   onInsertCode: (code: string) => void;
+  onCollapse?: () => void;
 }
 
 export default function AIPanel({
   activeBoard,
   activeLanguage,
   currentCode,
-  onInsertCode
+  onInsertCode,
+  onCollapse
 }: AIPanelProps) {
+  // Config states for Gemini & OpenRouter Customization
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiProvider, setApiProvider] = useState<"gemini" | "openrouter">(() => {
+    return (localStorage.getItem("robot_ai_provider") as "gemini" | "openrouter") || "gemini";
+  });
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("robot_ai_gemini_key") || "");
+  const [openrouterKey, setOpenrouterKey] = useState(() => localStorage.getItem("robot_ai_openrouter_key") || "");
+  const [selectedModel, setSelectedModel] = useState(() => {
+    const stored = localStorage.getItem("robot_ai_model");
+    if (stored) return stored;
+    const provider = localStorage.getItem("robot_ai_provider") || "gemini";
+    return provider === "openrouter" ? "openrouter/free" : "gemini-3.5-flash";
+  });
+
+  const saveSetting = (key: string, value: string) => {
+    localStorage.setItem(key, value);
+  };
+
+  const handleProviderChange = (provider: "gemini" | "openrouter") => {
+    setApiProvider(provider);
+    saveSetting("robot_ai_provider", provider);
+    
+    // Auto-select a corresponding default model
+    let defaultModel = "gemini-3.5-flash";
+    if (provider === "openrouter") {
+      defaultModel = "openrouter/free";
+    }
+    setSelectedModel(defaultModel);
+    saveSetting("robot_ai_model", defaultModel);
+  };
+
   const [messages, setMessages] = useState<{ role: "user" | "assistant"; text: string }[]>([
     {
       role: "assistant",
@@ -92,6 +125,13 @@ I can help study mechanical kinematics, write firmware routines, evaluate stress
     setIsLoading(true);
 
     try {
+      // Load current configurations from persistence
+      const prov = localStorage.getItem("robot_ai_provider") || "gemini";
+      const key = prov === "openrouter" 
+        ? localStorage.getItem("robot_ai_openrouter_key") || ""
+        : localStorage.getItem("robot_ai_gemini_key") || "";
+      const model = localStorage.getItem("robot_ai_model") || (prov === "openrouter" ? "google/gemini-2.5-flash:free" : "gemini-3.5-flash");
+
       const response = await fetch("/api/ai/assist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -100,7 +140,10 @@ I can help study mechanical kinematics, write firmware routines, evaluate stress
           codeContext: currentCode,
           language: activeLanguage.name,
           board: activeBoard.name,
-          systemInstruction: `You are an elite master roboticist, programmer, and CIM engineer specializing in ${activeBoard.name}. Provide precise instructions, clear mathematical formulations if coordinates are involved, and code snippets where fitting.`
+          systemInstruction: `You are an elite master roboticist, programmer, and CIM engineer specializing in ${activeBoard.name}. Provide precise instructions, clear mathematical formulations if coordinates are involved, and code snippets where fitting.`,
+          apiProvider: prov,
+          customApiKey: key,
+          selectedModel: model
         })
       });
 
@@ -142,18 +185,157 @@ I can help study mechanical kinematics, write firmware routines, evaluate stress
     <div id="ai-copilot-card" className="bg-[#1a1a1e] border border-white/5 rounded overflow-hidden flex flex-col h-full shadow-2xl">
       {/* Title */}
       <div className="flex items-center justify-between px-4 py-2 bg-[#141417] border-b border-white/5 shrink-0">
-        <div className="flex items-center space-x-2.5">
-          <Sparkles className="w-4 h-4 text-blue-500" />
-          <span className="font-mono text-xs font-semibold text-slate-200 tracking-tight">GEMINI_ROBOT_CO_PILOT_V3</span>
+        <div className="flex items-center space-x-2">
+          <Sparkles className="w-4 h-4 text-cyan-400 animate-pulse animate-duration-1000" />
+          <span className="font-mono text-xs font-semibold text-slate-200 tracking-tight select-none uppercase">
+            {apiProvider === "openrouter" ? "OpenRouter Copilot" : "Gemini Copilot v3"}
+          </span>
         </div>
-        <button
-          onClick={() => setMessages([messages[0]])}
-          title="Clear Chat Logs"
-          className="text-slate-500 hover:text-slate-300 transition-colors p-1 rounded hover:bg-[#0d0d0f]"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-        </button>
+        <div className="flex items-center space-x-1.5 shrink-0">
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            title="Model & API Calibration Setup"
+            className={`p-1 rounded cursor-pointer transition-colors ${
+              showSettings ? "text-cyan-400 bg-white/5" : "text-slate-500 hover:text-slate-200"
+            }`}
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setMessages([messages[0]])}
+            title="Clear Chat Logs"
+            className="text-slate-500 hover:text-slate-300 transition-colors p-1 rounded hover:bg-[#0d0d0f] cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              title="Collapse AI Panel"
+              className="text-slate-500 hover:text-rose-400 transition-colors p-1 rounded hover:bg-[#0d0d0f] cursor-pointer"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Retractable Settings Drawer */}
+      {showSettings && (
+        <div className="bg-[#141417] border-b border-white/5 p-3 space-y-2.5 font-mono text-[10px] text-slate-300 animate-in slide-in-from-top duration-200 select-none">
+          <div className="flex justify-between items-center border-b border-white/5 pb-1 select-none">
+            <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1">
+              🛠️ LLM Calibration Console
+            </span>
+            <span className="text-[7.5px] font-bold text-blue-400 bg-blue-500/15 border border-blue-500/10 px-1 rounded uppercase tracking-wider">
+              180-Token Cap Enabled for Standard/Free
+            </span>
+          </div>
+
+          {/* Provider Toggle Buttons */}
+          <div className="space-y-0.5">
+            <label className="text-[8px] font-bold uppercase tracking-wider text-slate-500 block">Service Provider</label>
+            <div className="flex bg-[#0d0d0f] p-0.5 rounded border border-white/5 gap-0.5">
+              <button
+                type="button"
+                onClick={() => handleProviderChange("gemini")}
+                className={`flex-1 py-1 rounded text-[9.5px] text-center font-bold tracking-tight block transition-all uppercase cursor-pointer ${
+                  apiProvider === "gemini" ? "bg-blue-600/95 text-white" : "text-slate-500 hover:text-slate-200"
+                }`}
+              >
+                Gemini (Standard)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleProviderChange("openrouter")}
+                className={`flex-1 py-1 rounded text-[9.5px] text-center font-bold tracking-tight block transition-all uppercase cursor-pointer ${
+                  apiProvider === "openrouter" ? "bg-purple-650/95 text-white" : "text-slate-500 hover:text-slate-200"
+                }`}
+              >
+                OpenRouter (Free Tiers)
+              </button>
+            </div>
+          </div>
+
+          {/* Model Selection Dropdown */}
+          <div className="space-y-0.5">
+            <label className="text-[8px] font-bold uppercase tracking-wider text-slate-500 block">Active Model Variant</label>
+            <select
+              value={selectedModel}
+              onChange={(e) => {
+                setSelectedModel(e.target.value);
+                saveSetting("robot_ai_model", e.target.value);
+              }}
+              className="w-full bg-[#0d0d0f] border border-white/5 rounded px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-blue-500/30 cursor-pointer text-ellipsis overflow-hidden"
+            >
+              {apiProvider === "gemini" ? (
+                <>
+                  <option value="gemini-3.5-flash">gemini-3.5-flash (Fast & Accurate - Default)</option>
+                  <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Cost Efficient)</option>
+                  <option value="gemini-2.5-flash">gemini-2.5-flash (Standard)</option>
+                  <option value="gemini-2.5-pro">gemini-2.5-pro (Creative Reasoning)</option>
+                </>
+              ) : (
+                <>
+                  <option value="openrouter/free">openrouter/free (Auto-Free Model Routing - Recommended)</option>
+                  <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Gemini 2.5 Flash)</option>
+                  <option value="google/gemini-2.5-pro">google/gemini-2.5-pro (Gemini 2.5 Pro)</option>
+                  <option value="deepseek/deepseek-r1">deepseek/deepseek-r1 (DeepSeek R1 Reasoning)</option>
+                  <option value="meta-llama/llama-3-8b-instruct">meta-llama/llama-3-8b-instruct (Meta LLaMA 3)</option>
+                  <option value="mistralai/mistral-7b-instruct">mistralai/mistral-7b-instruct (Mistral 7B)</option>
+                </>
+              )}
+            </select>
+            <div className="pt-1">
+              <label className="text-[7.5px] font-bold uppercase tracking-wider text-slate-500 block">Or customize Model ID directly:</label>
+              <input
+                type="text"
+                value={selectedModel}
+                onChange={(e) => {
+                  setSelectedModel(e.target.value);
+                  saveSetting("robot_ai_model", e.target.value);
+                }}
+                placeholder={apiProvider === "gemini" ? "e.g. gemini-3.5-flash" : "e.g. openrouter/free"}
+                className="w-full bg-[#0d0d0f] border border-white/5 rounded px-2 py-0.5 mt-0.5 text-[9px] text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/30 select-text font-mono"
+              />
+            </div>
+          </div>
+
+          {/* Custom API Key input */}
+          <div className="space-y-0.5">
+            <div className="flex justify-between items-center text-[8px] block">
+              <label className="font-bold uppercase tracking-wider text-slate-500">
+                {apiProvider === "gemini" ? "Custom Gemini API Key" : "Custom OpenRouter Secret Bearer"}
+              </label>
+              {(apiProvider === "gemini" ? geminiKey : openrouterKey) ? (
+                <span className="text-emerald-400 font-bold text-[7.5px] tracking-wider uppercase">● Local Access Key Mounted</span>
+              ) : (
+                <span className="text-amber-500 font-bold text-[7.5px] tracking-wider uppercase">○ Using Server Fallback</span>
+              )}
+            </div>
+            <input
+              type="password"
+              value={apiProvider === "gemini" ? geminiKey : openrouterKey}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (apiProvider === "gemini") {
+                  setGeminiKey(val);
+                  saveSetting("robot_ai_gemini_key", val);
+                } else {
+                  setOpenrouterKey(val);
+                  saveSetting("robot_ai_openrouter_key", val);
+                }
+              }}
+              placeholder={
+                apiProvider === "gemini"
+                  ? "Leave blank to fallback to server GEMINI_API_KEY..."
+                  : "Enter OpenRouter Key starting with sk-or-..."
+              }
+              className="w-full bg-[#0d0d0f] border border-white/5 rounded px-2 py-1 text-[9.5px] text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/30 select-text"
+            />
+          </div>
+        </div>
+      )}
 
       {/* Messages layout */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-[#0d0d0f]">

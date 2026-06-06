@@ -130,7 +130,7 @@ O100 REPEAT [9999]      ; Loop the sequence for continuous industrial operation
 
     (STAGE 4: VERTICAL RETRACT & TRANSIT)
     G01 Z100 F[#101]           ; Controlled vertical extraction to clear conveyor rails
-    G00 X150 Y0 Z100 A0 B45 F[#100] ; High-speed synchronous move to Dispatch Tray A clearance space
+    G00 X[#104] Y0 Z100 A0 B45 F[#100] ; High-speed synchronous move to Dynamic Color-Sorted clearance space
 
     (STAGE 5: CONTROLLED PLACE)
     G01 Z30 F[#101]            ; Precision downward approach into the storage tray
