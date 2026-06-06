@@ -99,7 +99,7 @@ export default function CimWorkspaceVisualizer({
     };
     
     // Joint 3 acts as the vertical plunge guideway quill
-    const slide = 25 + ((joints[3].angle + 120) / 240) * 30;
+    const slide = 25 + ((joints[3].angle + 120) / 240) * 110;
     const p3 = {
       x: p2.x,
       y: p2.y + slide
@@ -276,7 +276,7 @@ export default function CimWorkspaceVisualizer({
       const a2Deg = (angle2Rad * 180) / Math.PI;
       
       const currentPlungeY = clickY - (originY + robotDesign.shoulderLength * Math.sin(angle1Rad) + robotDesign.elbowLength * Math.sin(angle1Rad + angle2Rad));
-      const targetJ3Angle = ((currentPlungeY - 25) / 30) * 240 - 120;
+      const targetJ3Angle = ((currentPlungeY - 25) / 110) * 240 - 120;
       
       const nextJoints = joints.map((j) => {
         if (j.id === "shoulder") {
@@ -374,7 +374,7 @@ export default function CimWorkspaceVisualizer({
       const a2Deg = (angle2Rad * 180) / Math.PI;
       
       const currentPlungeY = targetY - (originY + robotDesign.shoulderLength * Math.sin(angle1Rad) + robotDesign.elbowLength * Math.sin(angle1Rad + angle2Rad));
-      const targetJ3Angle = ((currentPlungeY - 25) / 30) * 240 - 120;
+      const targetJ3Angle = ((currentPlungeY - 25) / 110) * 240 - 120;
       
       const nextJoints = joints.map((j) => {
         if (j.id === "shoulder") {
@@ -826,6 +826,11 @@ export default function CimWorkspaceVisualizer({
               {/* --- SCARA ROBOT DRAWINGS --- */}
               {robotType === "scara" && points.length >= 5 && (
                 <g id="scara-linkages-drawing">
+                  {/* Ground turntable mounting frame box anchoring SCARA column */}
+                  <path d="M 270 325 L 330 325 L 315 290 L 285 290 Z" fill="#18181b" stroke="#3f3f46" strokeWidth="2" />
+                  <circle cx={baseX} cy={baseY} r="18" fill="#09090b" stroke="#3f3f46" strokeWidth="2" />
+                  <text x={baseX - 16} y={baseY + 4} fill="#a1a1aa" fontSize="9" fontFamily="monospace" fontWeight="bold">J1</text>
+
                   {/* Vertical metal guide column support cylinder */}
                   <rect x="290" y="180" width="20" height="110" fill="#1f2937" rx="1.5" stroke="#4b5563" strokeWidth="2" />
                   <line x1="300" y1="180" x2="300" y2="290" stroke="#fbbf24" strokeWidth="1" strokeDasharray="3,4" opacity="0.4" />

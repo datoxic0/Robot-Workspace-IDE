@@ -309,6 +309,37 @@ export default function RobotWorkspaceIDE({
     const baseX = 300;
     const baseY = 290;
 
+    // Helper to resolve current end-effector position based on active robot design kinematics
+    const getEffectorPos = (jointsList: RobotJoint[]) => {
+      if (robotType === "cartesian") {
+        const railY = 110;
+        const carriageX = baseX + jointsList[1].angle * 1.45;
+        const plungeHeight = 80 + ((jointsList[2].angle + 120) / 240) * 110;
+        const plungeY = railY + plungeHeight;
+        return { x: carriageX, y: plungeY + 12 };
+      } else if (robotType === "scara") {
+        const postHeight = 110;
+        const p0 = { x: baseX, y: baseY - postHeight };
+        const l1 = jointsList.find(j => j.id === "shoulder")?.length ?? 110;
+        const l2 = jointsList.find(j => j.id === "elbow")?.length ?? 100;
+        const rad1 = (jointsList[1].angle * Math.PI) / 180;
+        const p1 = {
+          x: p0.x + l1 * Math.cos(rad1),
+          y: p0.y + l1 * Math.sin(rad1)
+        };
+        const rad2 = rad1 + (jointsList[2].angle * Math.PI) / 180;
+        const p2 = {
+          x: p1.x + l2 * Math.cos(rad2),
+          y: p1.y + l2 * Math.sin(rad2)
+        };
+        const slide = 25 + ((jointsList[3].angle + 120) / 240) * 110;
+        return { x: p2.x, y: p2.y + slide };
+      } else {
+        const pts = calculateForwardKinematics(baseX, baseY, jointsList);
+        return pts[pts.length - 1];
+      }
+    };
+
     // Dynamic Variables & Loops Dictionary local to this closure run
     const variableMap: Record<string, number> = resumeFromPause ? variableMapRef.current : {
       "#102": Math.round((sensorPositionX - baseX) * 1.5 * 10) / 10
@@ -451,37 +482,6 @@ export default function RobotWorkspaceIDE({
               // 3. Resolve planar tool coordinates X, Y, Z
               if (hasCoords) {
                 const mmScale = 1.5;
-                
-                // Helper to resolve current end-effector position based on active robot design kinematics
-                const getEffectorPos = (jointsList: RobotJoint[]) => {
-                  if (robotType === "cartesian") {
-                    const railY = 110;
-                    const carriageX = baseX + jointsList[1].angle * 1.45;
-                    const plungeHeight = 80 + ((jointsList[2].angle + 120) / 240) * 110;
-                    const plungeY = railY + plungeHeight;
-                    return { x: carriageX, y: plungeY + 12 };
-                  } else if (robotType === "scara") {
-                    const postHeight = 110;
-                    const p0 = { x: baseX, y: baseY - postHeight };
-                    const l1 = jointsList.find(j => j.id === "shoulder")?.length ?? 110;
-                    const l2 = jointsList.find(j => j.id === "elbow")?.length ?? 100;
-                    const rad1 = (jointsList[1].angle * Math.PI) / 180;
-                    const p1 = {
-                      x: p0.x + l1 * Math.cos(rad1),
-                      y: p0.y + l1 * Math.sin(rad1)
-                    };
-                    const rad2 = rad1 + (jointsList[2].angle * Math.PI) / 180;
-                    const p2 = {
-                      x: p1.x + l2 * Math.cos(rad2),
-                      y: p1.y + l2 * Math.sin(rad2)
-                    };
-                    const slide = 25 + ((jointsList[3].angle + 120) / 240) * 30;
-                    return { x: p2.x, y: p2.y + slide };
-                  } else {
-                    const pts = calculateForwardKinematics(baseX, baseY, jointsList);
-                    return pts[pts.length - 1];
-                  }
-                };
 
                 // Retrieve current real-world coordinates from previous joints list to preserve state
                 const currentEffector = getEffectorPos(startJoints);
@@ -547,7 +547,7 @@ export default function RobotWorkspaceIDE({
                   const a2Deg = (angle2Rad * 180) / Math.PI;
 
                   const currentPlungeY = pixelsY - (originY + l1 * Math.sin(angle1Rad) + l2 * Math.sin(angle1Rad + angle2Rad));
-                  const targetJ3Angle = ((currentPlungeY - 25) / 30) * 240 - 120;
+                  const targetJ3Angle = ((currentPlungeY - 25) / 110) * 240 - 120;
 
                   nextJoints = nextJoints.map((j) => {
                     if (j.id === "shoulder") {
@@ -660,8 +660,7 @@ export default function RobotWorkspaceIDE({
               }
               
               // Forward kinematics calculation to locate dropping/holding coordinates based on actual joints
-              const pts = calculateForwardKinematics(baseX, baseY, jointsRef.current);
-              const endEffectorPoint = pts[pts.length - 1];
+              const endEffectorPoint = getEffectorPos(jointsRef.current);
               const dropX = endEffectorPoint.x;
               const dropY = endEffectorPoint.y;
 
