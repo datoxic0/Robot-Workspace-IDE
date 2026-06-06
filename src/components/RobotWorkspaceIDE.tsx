@@ -10,6 +10,7 @@ import {
   CIMSortingStats
 } from "../types";
 import { parseGcodeLine, solveInverseKinematics, calculateForwardKinematics } from "../utils/kinematics";
+import ResizableModal from "./ResizableModal";
 import { 
   FolderOpen, 
   Play, 
@@ -311,28 +312,37 @@ export default function RobotWorkspaceIDE({
 
     // Helper to resolve current end-effector position based on active robot design kinematics
     const getEffectorPos = (jointsList: RobotJoint[]) => {
+      const sJoint = jointsList.find(j => j.id === "shoulder");
+      const eJoint = jointsList.find(j => j.id === "elbow");
+      const wJoint = jointsList.find(j => j.id === "wrist");
+
       if (robotType === "cartesian") {
         const railY = 110;
-        const carriageX = baseX + jointsList[1].angle * 1.45;
-        const plungeHeight = 80 + ((jointsList[2].angle + 120) / 240) * 110;
+        const sAngle = sJoint?.angle ?? 0;
+        const eAngle = eJoint?.angle ?? 0;
+        const carriageX = baseX + sAngle * 1.45;
+        const plungeHeight = 80 + ((eAngle + 120) / 240) * 110;
         const plungeY = railY + plungeHeight;
         return { x: carriageX, y: plungeY + 12 };
       } else if (robotType === "scara") {
         const postHeight = 110;
         const p0 = { x: baseX, y: baseY - postHeight };
-        const l1 = jointsList.find(j => j.id === "shoulder")?.length ?? 110;
-        const l2 = jointsList.find(j => j.id === "elbow")?.length ?? 100;
-        const rad1 = (jointsList[1].angle * Math.PI) / 180;
+        const l1 = sJoint?.length ?? 110;
+        const l2 = eJoint?.length ?? 100;
+        const sAngle = sJoint?.angle ?? 0;
+        const eAngle = eJoint?.angle ?? 0;
+        const wAngle = wJoint?.angle ?? 0;
+        const rad1 = (sAngle * Math.PI) / 180;
         const p1 = {
           x: p0.x + l1 * Math.cos(rad1),
           y: p0.y + l1 * Math.sin(rad1)
         };
-        const rad2 = rad1 + (jointsList[2].angle * Math.PI) / 180;
+        const rad2 = rad1 + (eAngle * Math.PI) / 180;
         const p2 = {
           x: p1.x + l2 * Math.cos(rad2),
           y: p1.y + l2 * Math.sin(rad2)
         };
-        const slide = 25 + ((jointsList[3].angle + 120) / 240) * 110;
+        const slide = 25 + ((wAngle + 120) / 240) * 110;
         return { x: p2.x, y: p2.y + slide };
       } else {
         const pts = calculateForwardKinematics(baseX, baseY, jointsList);
@@ -664,15 +674,18 @@ export default function RobotWorkspaceIDE({
               const dropX = endEffectorPoint.x;
               const dropY = endEffectorPoint.y;
 
+              let grabbedAny = false;
               setWorkpieces((prev) => {
-                return prev.map((wp) => {
+                const updated = prev.map((wp) => {
                   if (wp.status === "approaching" && hasGripped) {
                     // Grab if workpiece X matches actual gripper X (within 24px) 
                     // and gripper is sufficiently low (near conveyor bed level)
-                    const isNearGripper = Math.abs(wp.positionX - dropX) <= 24 && dropY >= 235;
+                    const xDiff = Math.abs(wp.positionX - dropX);
+                    const isNearGripper = xDiff <= 24 && dropY >= 235;
                     if (isNearGripper) {
                       addLog("warn", `[Actuator] Pneumatic suction solenoid: ENGAGED [${wp.color.toUpperCase()} securely grasped at X=${Math.round(wp.positionX)}px]`);
-                      return { ...wp, status: "picked" };
+                      grabbedAny = true;
+                      return { ...wp, status: "picked" as const };
                     }
                   }
                   if (wp.status === "picked" && !hasGripped) {
@@ -744,6 +757,21 @@ export default function RobotWorkspaceIDE({
                   }
                   return wp;
                 });
+
+                if (hasGripped && !grabbedAny) {
+                  const approachingWps = prev.filter(wp => wp.status === "approaching");
+                  if (approachingWps.length > 0) {
+                    const closest = approachingWps.reduce((prevWp, currWp) => 
+                      Math.abs(currWp.positionX - dropX) < Math.abs(prevWp.positionX - dropX) ? currWp : prevWp
+                    );
+                    const xDiff = Math.abs(closest.positionX - dropX);
+                    addLog("warn", `[Actuator Warning] Solenoid activated but missed workpiece! Closest part at X=${Math.round(closest.positionX)}px. Gripper: X=${Math.round(dropX)}px (diff=${Math.round(xDiff)}px, limit 24px), Y=${Math.round(dropY)}px (limit Y>=235px).`);
+                  } else {
+                    addLog("info", `[Actuator] Solenoid activated but no approaching parts on conveyor.`);
+                  }
+                }
+
+                return updated;
               });
               break;
             }
@@ -1342,163 +1370,147 @@ export default function RobotWorkspaceIDE({
       {/* 5. Centered Modal Dialogs */}
 
       {/* File Creation Centered Dialog Modal */}
-      {showAddFile && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
-          <div className="bg-[#1a1a1e] border border-white/10 rounded-lg max-w-sm w-full shadow-2xl p-4 space-y-4 animate-in fade-in zoom-in duration-150">
-            <div className="flex items-center justify-between border-b border-white/5 pb-2">
-              <span className="font-mono text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-2">
-                <FileCode className="w-4 h-4 text-blue-500" />
-                <span>Create Workspace Script</span>
-              </span>
-              <button 
-                onClick={() => setShowAddFile(false)} 
-                className="text-slate-500 hover:text-slate-300 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            
-            <div className="space-y-3">
-              <label className="block text-[10px] font-mono text-slate-400 uppercase">Script Name:</label>
-              <input
-                type="text"
-                value={newFileName}
-                onChange={(e) => setNewFileName(e.target.value)}
-                placeholder="e.g. pick_and_place"
-                className="w-full bg-[#0d0d0f] border border-white/10 text-slate-200 rounded px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-500 transition-colors"
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreateFile();
-                }}
-              />
-              <p className="text-[10px] text-slate-500 font-mono leading-relaxed">
-                Will auto-apply the extension <span className="text-blue-400 font-semibold">{activeLanguage.extension}</span> matching the active language context ({activeLanguage.name}).
-              </p>
-            </div>
-            
-            <div className="flex justify-end space-x-2 pt-2 border-t border-white/5">
-              <button
-                onClick={() => setShowAddFile(false)}
-                className="px-3 py-1.5 bg-[#0d0d0f] border border-white/5 hover:bg-[#141417] rounded text-xs font-mono text-slate-400 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCreateFile}
-                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white font-mono font-bold shadow-lg cursor-pointer"
-              >
-                Create File
-              </button>
-            </div>
+      <ResizableModal
+        isOpen={showAddFile}
+        onClose={() => setShowAddFile(false)}
+        title="Create Workspace Script"
+        icon={<FileCode className="w-4 h-4 text-blue-500" />}
+        defaultWidth={380}
+        defaultHeight={240}
+        minWidth={280}
+        minHeight={200}
+      >
+        <div className="space-y-4 font-mono text-xs text-slate-300">
+          <div className="space-y-3">
+            <label className="block text-[10px] uppercase font-bold text-slate-400">Script Name:</label>
+            <input
+              type="text"
+              value={newFileName}
+              onChange={(e) => setNewFileName(e.target.value)}
+              placeholder="e.g. pick_and_place"
+              className="w-full bg-[#0d0d0f] border border-white/10 text-slate-200 rounded px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-500 transition-colors"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleCreateFile();
+              }}
+            />
+            <p className="text-[10px] text-slate-500 leading-relaxed">
+              Will auto-apply the extension <span className="text-blue-400 font-semibold">{activeLanguage.extension}</span> matching the active language context ({activeLanguage.name}).
+            </p>
+          </div>
+          
+          <div className="flex justify-end space-x-2 pt-3 border-t border-white/5">
+            <button
+              onClick={() => setShowAddFile(false)}
+              className="px-3 py-1.5 bg-[#0d0d0f] border border-white/5 hover:bg-[#141417] rounded text-xs text-slate-400 cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleCreateFile}
+              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white font-bold shadow-lg cursor-pointer transition-colors"
+            >
+              Create File
+            </button>
           </div>
         </div>
-      )}
+      </ResizableModal>
 
       {/* Help Reference Center Centered Dialog Modal */}
-      {showHelpModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
-          <div className="bg-[#1a1a1e] border border-white/10 rounded-lg max-w-2xl w-full max-h-[85vh] shadow-2xl flex flex-col animate-in fade-in zoom-in duration-150">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0 bg-[#141417]">
-              <div className="flex items-center space-x-2">
-                <HelpCircle className="w-4 h-4 text-blue-500" />
-                <span className="font-mono text-xs font-bold text-slate-200 uppercase tracking-wider">
-                  Industrial 5-DOF CIM Controller Manual
-                </span>
-              </div>
-              <button 
-                onClick={() => setShowHelpModal(false)} 
-                className="text-slate-500 hover:text-slate-200 p-1 rounded-full hover:bg-white/5 cursor-pointer transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            
-            <div className="p-4 overflow-y-auto space-y-4 flex-1 text-xs leading-relaxed font-mono text-slate-300">
-              <div className="space-y-1 bg-[#0d0d0f] border border-white/5 p-3 rounded">
-                <div className="text-blue-400 font-bold text-[10px] uppercase tracking-wider">System Kinematics & Coordinate Mappings</div>
-                <p className="text-slate-400 text-[11px] leading-relaxed">
-                  The CIM Robotic Arm operates using 5 degrees of freedom: <span className="text-slate-200 font-semibold">X, Y, Z</span> represent the Cartesian Tool Center Point (TCP). 
-                  <span className="text-slate-200 font-semibold">A</span> controls the industrial wrist pitch angle (-120° to 120°), while 
-                  <span className="text-slate-200 font-semibold">B</span> dictates the absolute waist/base rotation (-180° to 180°).
-                </p>
-              </div>
+      <ResizableModal
+        isOpen={showHelpModal}
+        onClose={() => setShowHelpModal(false)}
+        title="Industrial 5-DOF CIM Controller Manual"
+        icon={<HelpCircle className="w-4 h-4 text-blue-500" />}
+        defaultWidth={700}
+        defaultHeight={540}
+        minWidth={360}
+        minHeight={320}
+      >
+        <div className="space-y-4 text-xs leading-relaxed font-mono text-slate-300">
+          <div className="space-y-1 bg-[#0d0d0f] border border-white/5 p-3 rounded">
+            <div className="text-blue-400 font-bold text-[10px] uppercase tracking-wider">System Kinematics & Coordinate Mappings</div>
+            <p className="text-slate-400 text-[11px] leading-relaxed">
+              The CIM Robotic Arm operates using 5 degrees of freedom: <span className="text-slate-200 font-semibold">X, Y, Z</span> represent the Cartesian Tool Center Point (TCP). 
+              <span className="text-slate-200 font-semibold">A</span> controls the industrial wrist pitch angle (-120° to 120°), while 
+              <span className="text-slate-200 font-semibold">B</span> dictates the absolute waist/base rotation (-180° to 180°).
+            </p>
+          </div>
 
-              <div>
-                <div className="text-emerald-400 font-bold border-b border-white/5 pb-1 mb-2 uppercase text-[10px] tracking-wider">Standard G-Codes Guide</div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-                  <div className="space-y-2">
-                    <div>
-                      <code className="text-blue-400 font-bold">G00 [Coords]</code>
-                      <p className="text-slate-400">Rapid travel path placement. Moves links concurrently at max frequency. E.g. <code className="text-slate-200 font-semibold">G00 X150 Y150 Z250</code></p>
-                    </div>
-                    <div>
-                      <code className="text-blue-400 font-bold">G01 [Coords] F[speed]</code>
-                      <p className="text-slate-400">Precision linear interpolation with custom Feedrate control. E.g. <code className="text-slate-200 font-semibold">G01 X150 Y20 Z10 F1200</code></p>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <div>
-                      <code className="text-blue-400 font-bold">G90</code>
-                      <p className="text-slate-400 cursor-text">Activates absolute programming coordinate mode (standard default).</p>
-                    </div>
-                    <div>
-                      <code className="text-blue-400 font-bold">G21</code>
-                      <p className="text-slate-400 cursor-text">Activates metric dimensions system. Arm metrics are computed in millimeters.</p>
-                    </div>
-                  </div>
+          <div>
+            <div className="text-emerald-400 font-bold border-b border-white/5 pb-1 mb-2 uppercase text-[10px] tracking-wider">Standard G-Codes Guide</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+              <div className="space-y-2">
+                <div>
+                  <code className="text-blue-400 font-bold">G00 [Coords]</code>
+                  <p className="text-slate-400">Rapid travel path placement. Moves links concurrently at max frequency. E.g. <code className="text-slate-200 font-semibold">G00 X150 Y150 Z250</code></p>
+                </div>
+                <div>
+                  <code className="text-blue-400 font-bold">G01 [Coords] F[speed]</code>
+                  <p className="text-slate-400">Precision linear interpolation with custom Feedrate control. E.g. <code className="text-slate-200 font-semibold">G01 X150 Y20 Z10 F1200</code></p>
                 </div>
               </div>
-
-              <div>
-                <div className="text-amber-400 font-bold border-b border-white/5 pb-1 mb-2 uppercase text-[10px] tracking-wider">Actuator M-Codes Guide</div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-                  <div className="space-y-2">
-                    <div>
-                      <code className="text-blue-400 font-bold">M03 S1 / S0</code>
-                      <p className="text-slate-400">Toggles the horizontal digital assembly line. <code className="text-slate-200 font-semibold">S1</code> starts the conveyor belt; <code className="text-slate-200 font-semibold">S0</code> halts it.</p>
-                    </div>
-                    <div>
-                      <code className="text-blue-400 font-bold">M66 P1 L3 Q5</code>
-                      <p className="text-slate-400">Interlock breaker. Pauses sequence block until breakbeam scanner registers an approaching workpiece.</p>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <div>
-                      <code className="text-blue-400 font-bold">M05 P1 / P0</code>
-                      <p className="text-slate-400 cursor-text">Pneumatic vacuum suction control. <code className="text-slate-200 font-semibold">P1</code> actuates suction to grab targets; <code className="text-slate-200 font-semibold">P0</code> releases/vents it.</p>
-                    </div>
-                    <div>
-                      <code className="text-blue-400 font-bold">M09</code>
-                      <p className="text-slate-400 cursor-text">Flashes safety strobe signaling block completion.</p>
-                    </div>
-                  </div>
+              <div className="space-y-2">
+                <div>
+                  <code className="text-blue-400 font-bold">G90</code>
+                  <p className="text-slate-400 cursor-text">Activates absolute programming coordinate mode (standard default).</p>
+                </div>
+                <div>
+                  <code className="text-blue-400 font-bold">G21</code>
+                  <p className="text-slate-400 cursor-text">Activates metric dimensions system. Arm metrics are computed in millimeters.</p>
                 </div>
               </div>
-
-              <div className="border-t border-white/5 pt-3">
-                <div className="text-teal-400 font-bold uppercase text-[10px] tracking-wider mb-2">Advanced Macro Blocks</div>
-                <p className="text-slate-400 text-[11px] leading-relaxed mb-2">
-                  To establish endless automation workflows, structure pick-and-place codes within repeat sub-loops:
-                </p>
-                <div className="bg-black/50 p-2.5 rounded font-mono text-[10px] text-emerald-450 border border-white/5">
-                  O100 REPEAT [9999]<br />
-                  &nbsp;&nbsp;; sequential pick/place tasks here<br />
-                  O100 ENDREPEAT
-                </div>
-              </div>
-            </div>
-            
-            <div className="flex justify-end px-4 py-3 bg-[#141417] border-t border-white/5 shrink-0">
-              <button
-                onClick={() => setShowHelpModal(false)}
-                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white font-mono font-bold transition-colors cursor-pointer"
-              >
-                Close Reference
-              </button>
             </div>
           </div>
+
+          <div>
+            <div className="text-amber-400 font-bold border-b border-white/5 pb-1 mb-2 uppercase text-[10px] tracking-wider">Actuator M-Codes Guide</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+              <div className="space-y-2">
+                <div>
+                  <code className="text-blue-400 font-bold">M03 S1 / S0</code>
+                  <p className="text-slate-400">Toggles the horizontal digital assembly line. <code className="text-slate-200 font-semibold">S1</code> starts the conveyor belt; <code className="text-slate-200 font-semibold">S0</code> halts it.</p>
+                </div>
+                <div>
+                  <code className="text-blue-400 font-bold">M66 P1 L3 Q5</code>
+                  <p className="text-slate-400">Interlock breaker. Pauses sequence block until breakbeam scanner registers an approaching workpiece.</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div>
+                  <code className="text-blue-400 font-bold">M05 P1 / P0</code>
+                  <p className="text-slate-400 cursor-text">Pneumatic vacuum suction control. <code className="text-slate-200 font-semibold">P1</code> actuates suction to grab targets; <code className="text-slate-200 font-semibold">P0</code> releases/vents it.</p>
+                </div>
+                <div>
+                  <code className="text-blue-400 font-bold">M09</code>
+                  <p className="text-slate-400 cursor-text">Flashes safety strobe signaling block completion.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-white/5 pt-3">
+            <div className="text-teal-400 font-bold uppercase text-[10px] tracking-wider mb-2">Advanced Macro Blocks</div>
+            <p className="text-slate-400 text-[11px] leading-relaxed mb-2">
+              To establish endless automation workflows, structure pick-and-place codes within repeat sub-loops:
+            </p>
+            <div className="bg-black/50 p-2.5 rounded font-mono text-[10px] text-emerald-400 border border-white/5">
+              O100 REPEAT [9999]<br />
+              &nbsp;&nbsp;; sequential pick/place tasks here<br />
+              O100 ENDREPEAT
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-3 border-t border-white/5">
+            <button
+              onClick={() => setShowHelpModal(false)}
+              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white font-bold transition-colors cursor-pointer"
+            >
+              Close Reference
+            </button>
+          </div>
         </div>
-      )}
+      </ResizableModal>
     </div>
   );
 }

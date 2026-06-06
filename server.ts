@@ -7,7 +7,9 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.DISABLE_HMR === "true" 
+  ? 3000 
+  : (process.env.LOCAL_PORT ? parseInt(process.env.LOCAL_PORT, 10) : 3000);
 
 // Body parser
 app.use(express.json());
