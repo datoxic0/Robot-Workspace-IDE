@@ -93,56 +93,225 @@ export const DEFAULT_FILES: Record<string, WorkspaceFile[]> = {
     {
       name: "cim_assembly.gcode",
       language: "gcode",
-      content: `; ==========================================================================
-; 5-DOF CIM INDUSTRIAL ROBOTIC ARM - PICK-AND-PLACE PRODUCTION SEQUENCE
-; SYSTEM CONFIG: X, Y, Z (Cartesian Tool Center Point), A (Wrist Pitch), B (Waist/Base Rotation)
-; ==========================================================================
+      content: `G90
+G21
+G18
+G92 X0 Y0 Z120 A0 B0
 
-; --- SAFETY INITIALIZATION BLOCK ---
-G90                     ; Set absolute positioning mode
-G21                     ; Set units to millimeters
-G18                     ; Select XZ plane select (typical for multi-axis arms)
-G92 X0 Y0 Z120 A0 B0    ; Coordinate system preset (Establish trusted software home)
+#100 = 1800
+#101 = 500
+#102 = 125
+#103 = 85
+#104 = 40
+#105 = 115
+#106 = 170
+#107 = 55
+#108 = 200
+#109 = 450
+#110 = 12
+#111 = 18
+#112 = 220
 
-; --- GLOBAL VARIABLE & FEEDRATE DEFINITIONS ---
-#100 = 3000             ; Travel Feedrate (Fast air-moves, mm/min)
-#101 = 800              ; Engagement Feedrate (Precision approach/retract, mm/min)
-#102 = -262.5           ; Dynamic pick coordinate corresponding to IRSENS position
+#120 = -262.5
+#121 = 140
+#122 = -250
+#123 = 140
 
-; --- MAIN PRODUCTION LOOP ---
-O100 REPEAT [9999]      ; Loop the sequence for continuous industrial operation
+#130 = 80
+#131 = 180
+#132 = 110
+#133 = 180
+#134 = 140
+#135 = 180
+#136 = 170
+#137 = 180
+#138 = 200
+#139 = 180
+#140 = 230
+#141 = 180
+#142 = 260
+#143 = 180
+#144 = 290
+#145 = 180
+#146 = 320
+#147 = 180
+#148 = 350
+#149 = 180
+#150 = 380
+#151 = 180
 
-    (STAGE 1: SYSTEM STANDBY & MATERIAL CALL)
-    G00 X0 Y0 Z120 A0 B0       ; Rapid to safe home/standby position
-    M03 S1                     ; Activate digital output: Conveyor Motor ON
-    
-    (STAGE 2: HARDWARE INTERLOCK - SENSOR POLLING)
-    ; Instead of a blind delay, poll Digital Input #1 (Laser Photo-Detector)
-    ; M66 code waits for Input 1 to go HIGH (L3). Q5 sets a 5-second timeout fault.
-    M66 P1 L3 Q5               
-    M03 S0                     ; Interlock met: Immediately Halt Conveyor Motor
+O100 REPEAT [9999]
 
-    (STAGE 3: PRECISION APPROACH & PICK)
-    G00 X[#102] Y140 Z60 A90 B10 ; Rapid travel to a safe clearance plane (20mm above target)
-    G01 Z40 F[#101]            ; Controlled linear descent to exact target pick point
-    M05 P1                     ; Actuate Pneumatic Solenoid Gripper (Engage jaw pressure)
-    G04 P800                   ; Dwell 800ms: Allow pneumatic pressure to fully stabilize
+M05 P0
+M09
+M03 S1
 
-    (STAGE 4: VERTICAL RETRACT & TRANSIT)
-    G01 Z100 F[#101]           ; Controlled vertical extraction to clear conveyor rails
-    G00 X[#104] Y0 Z100 A0 B45 F[#100] ; High-speed synchronous move to Dynamic Color-Sorted clearance space
+G01 X0 Y0 Z[#102] A0 B0 F[#100]
+G04 P200
+G01 X[#122] Y[#123] Z[#102] A0 B0 F[#100]
+G04 P200
 
-    (STAGE 5: CONTROLLED PLACE)
-    G01 Z30 F[#101]            ; Precision downward approach into the storage tray
-    M05 P0                     ; De-actuate Pneumatic Solenoid Gripper (Vent/Release pressure)
-    G04 P500                   ; Dwell 500ms: Ensure part is fully decoupled before moving
+M66 P1 L3 Q10
+M03 S0
 
-    (STAGE 6: CLEARANCE RETRACT)
-    G01 Z100 F[#101]           ; Retract straight up to clear tray partition walls
-    M09                        ; Pulse cycle completion strobe alert signal
+G01 X[#122] Y[#123] Z[#103] A0 B0 F[#101]
+M08
+G04 P[#108]
 
-O100 ENDREPEAT          ; Repeat cycle for next approaching workpiece
-M30                     ; Program end and reset`
+#200 = AI1
+#201 = AI2
+#202 = AI3
+#203 = AI4
+
+M09
+
+IF [#203 <= 0] GOTO O190
+
+#210 = 99
+#220 = #150
+#221 = #151
+
+IF [[#200 < #111] AND [#201 < #111] AND [#202 < #111]] GOTO O308
+IF [[#200 > #112] AND [#201 > #112] AND [#202 > #112]] GOTO O307
+IF [[#200 > [#201 + #110]] AND [#200 > [#202 + #110]]] GOTO O301
+IF [[#201 > [#200 + #110]] AND [#201 > [#202 + #110]]] GOTO O302
+IF [[#202 > [#200 + #110]] AND [[#202 > [#201 + #110]]] GOTO O303
+IF [[#200 > #110] AND [#201 > #110] AND [#202 < [#200 - #110]] AND [#202 < [#201 - #110]]] GOTO O304
+IF [[#201 > #110] AND [#202 > #110] AND [#200 < [#201 - #110]] AND [#200 < [#202 - #110]]] GOTO O305
+IF [[#200 > #110] AND [#202 > #110] AND [#201 < [#200 - #110]] AND [#201 < [#202 - #110]]] GOTO O306
+IF [[#200 > [#201 + 20]] AND [#201 > [#202 + 10]] AND [#202 < [#200 - #110]]] GOTO O309
+IF [[#200 > [#201 + 10]] AND [#202 > [#201 + 10]] AND [#201 < [#200 - #110]] AND [#201 < [#202 - #110]]] GOTO O310
+GOTO O399
+
+O301
+#210 = 1
+GOTO O400
+O302
+#210 = 2
+GOTO O400
+O303
+#210 = 3
+GOTO O400
+O304
+#210 = 4
+GOTO O400
+O305
+#210 = 5
+GOTO O400
+O306
+#210 = 6
+GOTO O400
+O307
+#210 = 7
+GOTO O400
+O308
+#210 = 8
+GOTO O400
+O309
+#210 = 9
+GOTO O400
+O310
+#210 = 10
+GOTO O400
+O399
+#210 = 99
+GOTO O400
+
+O400
+IF [#210 = 1] GOTO O410
+IF [#210 = 2] GOTO O420
+IF [#210 = 3] GOTO O430
+IF [#210 = 4] GOTO O440
+IF [#210 = 5] GOTO O450
+IF [#210 = 6] GOTO O460
+IF [#210 = 7] GOTO O470
+IF [#210 = 8] GOTO O480
+IF [#210 = 9] GOTO O490
+IF [#210 = 10] GOTO O500
+GOTO O600
+
+O410
+#220 = #130
+#221 = #131
+GOTO O600
+O420
+#220 = #132
+#221 = #133
+GOTO O600
+O430
+#220 = #134
+#221 = #135
+GOTO O600
+O440
+#220 = #136
+#221 = #137
+GOTO O600
+O450
+#220 = #138
+#221 = #139
+GOTO O600
+O460
+#220 = #140
+#221 = #141
+GOTO O600
+O470
+#220 = #142
+#221 = #143
+GOTO O600
+O480
+#220 = #144
+#221 = #145
+GOTO O600
+O490
+#220 = #146
+#221 = #147
+GOTO O600
+O500
+#220 = #148
+#221 = #149
+GOTO O600
+
+O600
+G01 X[#120] Y[#121] Z[#105] A0 B0 F[#100]
+G04 P150
+G01 Z[#104] F[#101]
+G04 P150
+M05 P1
+G04 P[#109]
+G01 Z[#105] F[#101]
+G04 P150
+
+G01 X[#220] Y[#221] Z[#106] A0 B20 F[#100]
+G04 P150
+G01 Z[#107] F[#101]
+G04 P150
+M05 P0
+G04 P[#109]
+G01 Z[#105] F[#101]
+G04 P150
+
+G01 X0 Y0 Z[#102] A0 B0 F[#100]
+M03 S1
+GOTO O100
+
+O190
+M03 S0
+M09
+M05 P0
+G01 X0 Y0 Z[#102] A0 B0 F[#100]
+G04 P1000
+GOTO O100
+
+M30
+
+Development advice for the app developer:
+
+Separate sensing, decision-making, and motion into three distinct layers. That will stop the arm from starting late or moving inconsistently.
+Add a teach/calibration mode so each color bin, pick point, and safe height can be stored and edited without rewriting code.
+Add motion profiling with acceleration and deceleration control. Robot arms should not jump straight into full-speed moves.
+Build a status panel that shows current joint angles, active sensor values, chosen color, target bin, and last fault reason.
+Add a dry-run simulation mode that executes the full path with gripper disabled, so coordinate and kinematic errors can be caught before real pickup.
+`
     },
     {
       name: "kinematic_test.cim",

@@ -13,7 +13,7 @@ import {
 import { BOARDS, LANGUAGES, DEFAULT_FILES, INITIAL_JOINTS } from "./data/templates";
 import CimWorkspaceVisualizer from "./components/CimWorkspaceVisualizer";
 import RobotWorkspaceIDE from "./components/RobotWorkspaceIDE";
-import AIPanel from "./components/AIPanel";
+import RightControlPanel from "./components/RightControlPanel";
 import { 
   Cpu, 
   Wrench, 
@@ -98,11 +98,12 @@ export default function App() {
   const [sensorPositionX, setSensorPositionX] = useState<number>(125); // Color scanner offset location (80 - 220 pixels)
   const [selectedDesignTab, setSelectedDesignTab] = useState<"robot-designer" | "workspace-config" | "system-status">("robot-designer");
   const [activeMainTab, setActiveMainTab] = useState<"visualizer" | "ide" | "ai">("visualizer");
-  const [designControlsExpanded, setDesignControlsExpanded] = useState<boolean>(false);
+  const [designControlsExpanded, setDesignControlsExpanded] = useState<boolean>(true);
 
   // High density retractable panel layout states
   const [leftCollapsed, setLeftCollapsed] = useState<boolean>(false);
   const [rightCollapsed, setRightCollapsed] = useState<boolean>(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
 
   // Serial Console simulation terminal logs logger
   const [logs, setLogs] = useState<TerminalLog[]>([
@@ -123,7 +124,9 @@ export default function App() {
     blockPosition: 0,
     hasBlock: false,
     status: "idle",
-    simulationSpeed: 1
+    simulationSpeed: 1,
+    dryRunMode: false,
+    profilingEnabled: true
   });
 
   // Handle active boards selector shifting: auto-load projects file templates library lists
@@ -187,6 +190,63 @@ export default function App() {
     ]);
   };
 
+  // Dynamic layout column adjustments
+  const [leftWidth, setLeftWidth] = useState<number>(38); // default width percentage for simulation visualizer
+  const [rightWidth, setRightWidth] = useState<number>(26); // default width percentage for AI copilot panel
+  const [windowWidth, setWindowWidth] = useState<number>(() => typeof window !== "undefined" ? window.innerWidth : 1200);
+
+  const mainRef = React.useRef<HTMLDivElement>(null);
+  const isResizingLeftRef = React.useRef<boolean>(false);
+  const isResizingRightRef = React.useRef<boolean>(false);
+
+  React.useEffect(() => {
+    const handleWinResize = () => {
+      setWindowWidth(window.innerWidth);
+    };
+    window.addEventListener("resize", handleWinResize);
+    return () => window.removeEventListener("resize", handleWinResize);
+  }, []);
+
+  const startResizeLeft = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingLeftRef.current = true;
+    document.addEventListener("mousemove", handleResizeMove);
+    document.addEventListener("mouseup", handleResizeUp);
+  };
+
+  const startResizeRight = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingRightRef.current = true;
+    document.addEventListener("mousemove", handleResizeMove);
+    document.addEventListener("mouseup", handleResizeUp);
+  };
+
+  const handleResizeMove = (e: MouseEvent) => {
+    if (!mainRef.current) return;
+    const rect = mainRef.current.getBoundingClientRect();
+    const containerWidth = rect.width;
+    if (containerWidth <= 0) return;
+
+    if (isResizingLeftRef.current) {
+      const clientXInsideMain = e.clientX - rect.left;
+      let newLeftPct = (clientXInsideMain / containerWidth) * 100;
+      newLeftPct = Math.max(15, Math.min(55, newLeftPct));
+      setLeftWidth(newLeftPct);
+    } else if (isResizingRightRef.current) {
+      const clientXFromRightInsideMain = rect.right - e.clientX;
+      let newRightPct = (clientXFromRightInsideMain / containerWidth) * 100;
+      newRightPct = Math.max(15, Math.min(45, newRightPct));
+      setRightWidth(newRightPct);
+    }
+  };
+
+  const handleResizeUp = () => {
+    isResizingLeftRef.current = false;
+    isResizingRightRef.current = false;
+    document.removeEventListener("mousemove", handleResizeMove);
+    document.removeEventListener("mouseup", handleResizeUp);
+  };
+
   return (
     <div className="h-screen bg-[#0d0d0f] text-slate-350 flex flex-col antialiased overflow-hidden">
       
@@ -229,6 +289,14 @@ export default function App() {
             <div className="w-2 h-2 rounded-full bg-green-500 mr-1 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
             <span>{activeLanguage.name}</span>
           </div>
+
+          <button
+            onClick={() => setIsSettingsModalOpen(true)}
+            className="flex items-center justify-center p-1.5 bg-[#1e1e24] hover:bg-[#2e2e38] text-slate-350 hover:text-white border border-white/10 rounded transition-all cursor-pointer"
+            title="Dedicated Settings & Preferences Panel"
+          >
+            <Settings className="w-4 h-4 text-slate-400 hover:text-blue-400 animate-spin-slow" />
+          </button>
         </div>
       </header>
 
@@ -270,12 +338,18 @@ export default function App() {
       </div>
 
       {/* 3. Main Interactive Dashboard Column Grid */}
-      <main className="flex-1 p-3 grid grid-cols-1 xl:grid-cols-12 gap-3 min-h-0 overflow-hidden">
+      <main 
+        ref={mainRef}
+        className="flex-1 p-3 flex flex-col xl:flex-row gap-3 min-h-0 overflow-hidden relative select-none"
+      >
         
-        {/* Left Column: Mechanical Kinematics Visualizer (Custom-Retractable) */}
-        <div className={`${leftCollapsed ? "xl:col-span-1" : "xl:col-span-5"} flex-col h-full min-h-0 ${activeMainTab === "visualizer" ? "flex" : "hidden"} xl:flex transition-all duration-300`}>
+        {/* Left Column: Mechanical Kinematics Visualizer (Custom-Retractable & Resizable) */}
+        <div 
+          style={!leftCollapsed && windowWidth >= 1280 ? { width: `${leftWidth}%` } : undefined}
+          className={`${leftCollapsed ? "xl:w-12 shrink-0 md:flex" : "flex-col"} h-full min-h-0 ${activeMainTab === "visualizer" ? "flex" : "hidden"} xl:flex`}
+        >
           {leftCollapsed ? (
-            <div className="h-full bg-[#141417] border border-white/5 rounded flex flex-col items-center py-4 space-y-4 shadow-xl shrink-0">
+            <div className="h-full bg-[#141417] border border-white/5 rounded flex flex-col items-center py-4 space-y-4 shadow-xl shrink-0 w-12">
               <button
                 onClick={() => setLeftCollapsed(false)}
                 className="p-1.5 hover:bg-white/10 rounded text-blue-400 hover:text-white cursor-pointer transition-colors"
@@ -321,12 +395,19 @@ export default function App() {
           )}
         </div>
 
-        {/* Middle Column: Hardware Code IDE */}
-        <div className={`${
-          leftCollapsed && rightCollapsed ? "xl:col-span-10" :
-          leftCollapsed ? "xl:col-span-8" :
-          rightCollapsed ? "xl:col-span-6" : "xl:col-span-4"
-        } flex-col h-full min-h-0 ${activeMainTab === "ide" ? "flex" : "hidden"} xl:flex transition-all duration-300`}>
+        {/* Dynamic vertical resizer drag handle between Left & Center */}
+        {!leftCollapsed && windowWidth >= 1280 && (
+          <div
+            onMouseDown={startResizeLeft}
+            className="w-1.5 hover:w-2 bg-transparent hover:bg-blue-600/30 cursor-col-resize shrink-0 transition-all duration-150 relative group"
+            title="Drag to resize simulation and ide panels"
+          >
+            <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 bg-white/5 group-hover:bg-blue-500/50 transition-colors pointer-events-none" />
+          </div>
+        )}
+ 
+        {/* Middle Column: Hardware Code IDE (Fills remaining container space) */}
+        <div className={`flex-1 flex-col h-full min-h-0 min-w-[280px] ${activeMainTab === "ide" ? "flex" : "hidden"} xl:flex`}>
           <RobotWorkspaceIDE
             activeBoard={activeBoard}
             setActiveBoard={setActiveBoard}
@@ -355,10 +436,24 @@ export default function App() {
           />
         </div>
 
-        {/* Right Column: AI Robotic Assistant Chat (Custom-Retractable) */}
-        <div className={`${rightCollapsed ? "xl:col-span-1" : "xl:col-span-3"} flex-col h-full min-h-0 ${activeMainTab === "ai" ? "flex" : "hidden"} xl:flex transition-all duration-300`}>
+        {/* Dynamic vertical resizer drag handle between Center & Right */}
+        {!rightCollapsed && windowWidth >= 1280 && (
+          <div
+            onMouseDown={startResizeRight}
+            className="w-1.5 hover:w-2 bg-transparent hover:bg-[#38bdf8]/30 cursor-col-resize shrink-0 transition-all duration-150 relative group"
+            title="Drag to resize ide and copilot panels"
+          >
+            <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 bg-white/5 group-hover:bg-cyan-500/50 transition-colors pointer-events-none" />
+          </div>
+        )}
+ 
+        {/* Right Column: AI Robotic Assistant Chat (Custom-Retractable & Resizable) */}
+        <div 
+          style={!rightCollapsed && windowWidth >= 1280 ? { width: `${rightWidth}%` } : undefined}
+          className={`${rightCollapsed ? "xl:w-12 shrink-0 md:flex" : "flex-col"} h-full min-h-0 ${activeMainTab === "ai" ? "flex" : "hidden"} xl:flex`}
+        >
           {rightCollapsed ? (
-            <div className="h-full bg-[#141417] border border-white/5 rounded flex flex-col items-center py-4 space-y-4 shadow-xl shrink-0">
+            <div className="h-full bg-[#141417] border border-white/5 rounded flex flex-col items-center py-4 space-y-4 shadow-xl shrink-0 w-12">
               <button
                 onClick={() => setRightCollapsed(false)}
                 className="p-1.5 hover:bg-white/10 rounded text-blue-400 hover:text-white cursor-pointer transition-colors"
@@ -375,12 +470,30 @@ export default function App() {
             </div>
           ) : (
             <div className="flex-1 flex flex-col min-h-0">
-              <AIPanel
+              <RightControlPanel
                 activeBoard={activeBoard}
                 activeLanguage={activeLanguage}
                 currentCode={files[activeFileIndex]?.content || ""}
                 onInsertCode={handleInsertCodeFromAI}
                 onCollapse={() => setRightCollapsed(true)}
+                joints={joints}
+                setJoints={setJoints}
+                robotDesign={robotDesign}
+                robotType={robotType}
+                simulationState={simulationState}
+                setSimulationState={setSimulationState}
+                sortingStats={sortingStats}
+                setSortingStats={setSortingStats}
+                feedMode={feedMode}
+                setFeedMode={setFeedMode}
+                activeFile={files[activeFileIndex]}
+                onFileChange={(newContent) => {
+                  setFiles((prev) =>
+                    prev.map((f, i) =>
+                      i === activeFileIndex ? { ...f, content: newContent } : f
+                    )
+                  );
+                }}
               />
             </div>
           )}
@@ -796,6 +909,254 @@ export default function App() {
           <div className="w-2 h-2 rounded-full bg-white animate-pulse"></div>
         </div>
       </footer>
+
+      {/* 5. Dedicated Modal for Settings & Preferences */}
+      {isSettingsModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in select-none">
+          <div className="bg-[#141417] border border-white/10 rounded-lg w-full max-w-2xl h-auto max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-white/5 bg-[#1a1a1e]">
+              <div className="flex items-center space-x-2 text-blue-400">
+                <Settings className="w-4 h-4 text-blue-500 animate-spin-slow" />
+                <span className="font-mono text-xs font-black uppercase tracking-wider text-slate-200">
+                  SYSTEM CALIBRATION_SETTINGS & PREFERENCES
+                </span>
+              </div>
+              <button
+                onClick={() => setIsSettingsModalOpen(false)}
+                className="p-1 hover:bg-white/5 text-slate-400 hover:text-white rounded transition-colors text-xs font-mono font-bold"
+              >
+                [CLOSE]
+              </button>
+            </div>
+
+            {/* Scrollable Content Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-white/10 text-xs font-mono">
+              
+              {/* Group A: Mechanical Kinematics */}
+              <div className="space-y-4">
+                <div className="font-bold text-blue-400 border-b border-white/5 pb-1 uppercase text-[10px] tracking-wider">
+                  Phase A: Robot Kinematics & Mechanics
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="flex justify-between font-bold text-slate-400">
+                      <span>Shoulder segment link (J1):</span>
+                      <span className="text-blue-400">{robotDesign.shoulderLength} mm</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={60}
+                      max={180}
+                      step={5}
+                      value={robotDesign.shoulderLength}
+                      onChange={(e) => setRobotDesign(prev => ({ ...prev, shoulderLength: Number(e.target.value) }))}
+                      className="w-full accent-blue-500"
+                    />
+                    <span className="text-[9px] text-slate-600 block">Mechanical span for horizontal shoulder projection.</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex justify-between font-bold text-slate-400">
+                      <span>Elbow segment link (J2):</span>
+                      <span className="text-blue-400">{robotDesign.elbowLength} mm</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={60}
+                      max={180}
+                      step={5}
+                      value={robotDesign.elbowLength}
+                      onChange={(e) => setRobotDesign(prev => ({ ...prev, elbowLength: Number(e.target.value) }))}
+                      className="w-full accent-blue-500"
+                    />
+                    <span className="text-[9px] text-slate-600 block">Radius boundary swing range.</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex justify-between font-bold text-slate-400">
+                      <span>Wrist segment link (J3):</span>
+                      <span className="text-blue-400">{robotDesign.wristLength} mm</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={30}
+                      max={100}
+                      step={5}
+                      value={robotDesign.wristLength}
+                      onChange={(e) => setRobotDesign(prev => ({ ...prev, wristLength: Number(e.target.value) }))}
+                      className="w-full accent-blue-500"
+                    />
+                    <span className="text-[9px] text-slate-600 block">End effector wrist mounting length extension.</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex justify-between font-bold text-slate-400">
+                      <span>Payload Mass capacity:</span>
+                      <span className="text-blue-400">{robotDesign.payloadWeight} kg</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={5.0}
+                      step={0.1}
+                      value={robotDesign.payloadWeight}
+                      onChange={(e) => setRobotDesign(prev => ({ ...prev, payloadWeight: Number(e.target.value) }))}
+                      className="w-full accent-blue-500"
+                    />
+                    <span className="text-[9px] text-slate-600 block">Maximum load rating before joint torque stress limit faults.</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <span className="block font-bold text-slate-400 uppercase">Interactive End-Effector Style Tool:</span>
+                  <div className="flex gap-2">
+                    {(["gripper", "suction", "welder"] as const).map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => setRobotDesign(prev => ({ ...prev, endEffectorType: type }))}
+                        className={`flex-1 py-1.5 rounded border text-[10px] font-bold uppercase transition-all ${
+                          robotDesign.endEffectorType === type
+                            ? "bg-blue-600 border-blue-500 text-white"
+                            : "bg-[#1e1e24] border-white/5 text-slate-400 hover:text-white"
+                        }`}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Group B: Factory Simulator Params */}
+              <div className="space-y-4">
+                <div className="font-bold text-indigo-400 border-b border-white/5 pb-1 uppercase text-[10px] tracking-wider">
+                  Phase B: Factory Simulator & Color scanner configuration
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="flex justify-between font-bold text-slate-400">
+                      <span>Conveyor horizontal speed:</span>
+                      <span className="text-indigo-400">{conveyorSpeed}x scalar</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={1}
+                      max={5}
+                      step={0.5}
+                      value={conveyorSpeed}
+                      onChange={(e) => setConveyorSpeed(Number(e.target.value))}
+                      className="w-full accent-indigo-500"
+                    />
+                    <span className="text-[9px] text-slate-600 block">Material transit speed multiplier on physical belt.</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex justify-between font-bold text-slate-400">
+                      <span>Color Scanner Location x-offset:</span>
+                      <span className="text-indigo-400">{sensorPositionX} px</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={80}
+                      max={225}
+                      step={5}
+                      value={sensorPositionX}
+                      onChange={(e) => setSensorPositionX(Number(e.target.value))}
+                      className="w-full accent-indigo-500"
+                    />
+                    <span className="text-[9px] text-slate-600 block">Left scanning beam positioning offset coordinates.</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex justify-between font-bold text-slate-400">
+                      <span>Collision Obstacle Barrier Height:</span>
+                      <span className="text-rose-400">{obstacleHeight} px</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={80}
+                      step={5}
+                      value={obstacleHeight}
+                      onChange={(e) => setObstacleHeight(Number(e.target.value))}
+                      className="w-full accent-rose-500"
+                    />
+                    <span className="text-[9px] text-slate-600 block">Height ceiling obstacle to test path collisions (0 = bypassed).</span>
+                  </div>
+
+                  <div className="space-y-2 bg-[#0c0c0e] p-2.5 rounded border border-white/5 flex flex-col justify-between">
+                    <span className="block font-bold text-slate-400 uppercase text-[9px] mb-1">Color spawning queue feed:</span>
+                    <select
+                      value={feedMode}
+                      onChange={(e: any) => setFeedMode(e.target.value)}
+                      className="bg-black/40 border border-white/10 rounded px-2 py-1 text-slate-300 w-full text-[10px]"
+                    >
+                      <option value="random" className="bg-[#141417] text-slate-200">Random Spawns</option>
+                      <option value="red" className="bg-[#141417] text-slate-200">Always Red</option>
+                      <option value="green" className="bg-[#141417] text-slate-200">Always Green</option>
+                      <option value="blue" className="bg-[#141417] text-slate-200">Always Blue</option>
+                      <option value="yellow" className="bg-[#141417] text-slate-200">Always Yellow</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Group C: Compiler and Virtual Settings */}
+              <div className="space-y-4">
+                <div className="font-bold text-amber-500 border-b border-white/5 pb-1 uppercase text-[10px] tracking-wider">
+                  Phase C: Interpreter Execution Core & Bypasses
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <span className="block font-bold text-slate-400 uppercase">Operational Mode Setup:</span>
+                    <div className="space-y-1">
+                      <label className="flex items-center space-x-2 text-slate-350 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={simulationState.dryRunMode}
+                          onChange={(e) => setSimulationState(prev => ({ ...prev, dryRunMode: e.target.checked }))}
+                          className="rounded border-white/10 bg-[#1e1e24] accent-amber-500"
+                        />
+                        <span>Enable Dry-Run Bypass (Bypass Gripper Suction)</span>
+                      </label>
+                      <label className="flex items-center space-x-2 text-slate-350 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={simulationState.profilingEnabled}
+                          onChange={(e) => setSimulationState(prev => ({ ...prev, profilingEnabled: e.target.checked }))}
+                          className="rounded border-white/10 bg-[#1e1e24] accent-amber-500"
+                        />
+                        <span>Enable Microsecond Profiling Registers</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 bg-[#0c0c0e] p-2.5 rounded border border-white/5 text-[9.5px]">
+                    <div className="font-bold text-slate-400 mb-1 uppercase text-[8.5px]">Diagnostic Level Registers:</div>
+                    <div className="text-slate-500 leading-normal space-y-0.5">
+                      <div>INTEGRATION LAYER: ACTIVE</div>
+                      <div>PROFILING BUFFERS: ACTIVE</div>
+                      <div>THERMAL LEVEL: 42°C (OPTIMAL)</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Footer Summary Bar */}
+            <div className="px-5 py-3 border-t border-white/5 bg-[#141417] text-right">
+              <button
+                onClick={() => setIsSettingsModalOpen(false)}
+                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold uppercase rounded text-[10px] transition-all cursor-pointer"
+              >
+                Apply Parameters & Recalibrate Base
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

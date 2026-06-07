@@ -270,19 +270,19 @@ I can help study mechanical kinematics, write firmware routines, evaluate stress
             >
               {apiProvider === "gemini" ? (
                 <>
-                  <option value="gemini-3.5-flash">gemini-3.5-flash (Fast & Accurate - Default)</option>
-                  <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Cost Efficient)</option>
-                  <option value="gemini-2.5-flash">gemini-2.5-flash (Standard)</option>
-                  <option value="gemini-2.5-pro">gemini-2.5-pro (Creative Reasoning)</option>
+                  <option value="gemini-3.5-flash" className="bg-[#141417] text-slate-200">gemini-3.5-flash (Fast & Accurate - Default)</option>
+                  <option value="gemini-3.1-flash-lite" className="bg-[#141417] text-slate-200">gemini-3.1-flash-lite (Cost Efficient)</option>
+                  <option value="gemini-2.5-flash" className="bg-[#141417] text-slate-200">gemini-2.5-flash (Standard)</option>
+                  <option value="gemini-2.5-pro" className="bg-[#141417] text-slate-200">gemini-2.5-pro (Creative Reasoning)</option>
                 </>
               ) : (
                 <>
-                  <option value="openrouter/free">openrouter/free (Auto-Free Model Routing - Recommended)</option>
-                  <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Gemini 2.5 Flash)</option>
-                  <option value="google/gemini-2.5-pro">google/gemini-2.5-pro (Gemini 2.5 Pro)</option>
-                  <option value="deepseek/deepseek-r1">deepseek/deepseek-r1 (DeepSeek R1 Reasoning)</option>
-                  <option value="meta-llama/llama-3-8b-instruct">meta-llama/llama-3-8b-instruct (Meta LLaMA 3)</option>
-                  <option value="mistralai/mistral-7b-instruct">mistralai/mistral-7b-instruct (Mistral 7B)</option>
+                  <option value="openrouter/free" className="bg-[#141417] text-slate-200">openrouter/free (Auto-Free Model Routing - Recommended)</option>
+                  <option value="google/gemini-2.5-flash" className="bg-[#141417] text-slate-200">google/gemini-2.5-flash (Gemini 2.5 Flash)</option>
+                  <option value="google/gemini-2.5-pro" className="bg-[#141417] text-slate-200">google/gemini-2.5-pro (Gemini 2.5 Pro)</option>
+                  <option value="deepseek/deepseek-r1" className="bg-[#141417] text-slate-200">deepseek/deepseek-r1 (DeepSeek R1 Reasoning)</option>
+                  <option value="meta-llama/llama-3-8b-instruct" className="bg-[#141417] text-slate-200">meta-llama/llama-3-8b-instruct (Meta LLaMA 3)</option>
+                  <option value="mistralai/mistral-7b-instruct" className="bg-[#141417] text-slate-200">mistralai/mistral-7b-instruct (Mistral 7B)</option>
                 </>
               )}
             </select>

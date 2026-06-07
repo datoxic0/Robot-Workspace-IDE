@@ -1,1 +1,63 @@
 @import "tailwindcss";
+
+/* VoltLogic Advanced Dynamic Contrast Outline Typography System */
+.text-outline-dual {
+  color: #ffffff !important;
+  text-shadow: 
+    -1.5px -1.5px 0 #000000,  
+     1.5px -1.5px 0 #000000,
+    -1.5px  1.5px 0 #000000,
+     1.5px  1.5px 0 #000000,
+     0px    0px 6px rgba(59, 130, 246, 0.45);
+}
+
+.text-outline-emerald {
+  color: #10b981 !important; /* Emerald primary core */
+  text-shadow: 
+    -1.5px -1.5px 0 #022c22,  
+     1.5px -1.5px 0 #022c22,
+    -1.5px  1.5px 0 #022c22,
+     1.5px  1.5px 0 #022c22,
+     0px    0px 6px rgba(16, 185, 129, 0.4);
+}
+
+.text-outline-amber {
+  color: #fbbf24 !important; /* Amber primary core */
+  text-shadow: 
+    -1.5px -1.5px 0 #451a03,  
+     1.5px -1.5px 0 #451a03,
+    -1.5px  1.5px 0 #451a03,
+     1.5px  1.5px 0 #451a03,
+     0px    0px 6px rgba(251, 191, 36, 0.4);
+}
+
+.text-outline-rose {
+  color: #f43f5e !important; /* Rose primary core */
+  text-shadow: 
+    -1.5px -1.5px 0 #4c0519,  
+     1.5px -1.5px 0 #4c0519,
+    -1.5px  1.5px 0 #4c0519,
+     1.5px  1.5px 0 #4c0519,
+     0px    0px 6px rgba(244, 63, 94, 0.4);
+}
+
+.text-outline-cyan {
+  color: #22d3ee !important; /* Cyan primary core */
+  text-shadow: 
+    -1.5px -1.5px 0 #083344,  
+     1.5px -1.5px 0 #083344,
+    -1.5px  1.5px 0 #083344,
+     1.5px  1.5px 0 #083344,
+     0px    0px 6px rgba(34, 211, 238, 0.4);
+}
+
+/* Bulletproof Global Reset for ALL select and option dropdown lists */
+select, select option, option {
+  background-color: #141417 !important;
+  color: #f1f5f9 !important;
+}
+
+select:focus {
+  outline: none !important;
+}
+

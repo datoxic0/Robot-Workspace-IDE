@@ -30,6 +30,8 @@ import {
   HelpCircle,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   Pause
 } from "lucide-react";
 
@@ -117,7 +119,62 @@ export default function RobotWorkspaceIDE({
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [interpreterIntervalId, setInterpreterIntervalId] = useState<NodeJS.Timeout | null>(null);
+  const interpreterIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [simulationSpeed, setSimulationSpeed] = useState<number>(1000); // Step interval in milliseconds
+
+  // Dynamic dashboard resizable panel widths
+  const [explorerWidth, setExplorerWidth] = useState<number>(192); // default 192px
+  const [terminalHeight, setTerminalHeight] = useState<number>(160); // default 160px
+  const [isTerminalCollapsed, setIsTerminalCollapsed] = useState<boolean>(false);
+
+  const isResizingExplorerRef = useRef<boolean>(false);
+  const isResizingTerminalRef = useRef<boolean>(false);
+
+  const startResizeExplorer = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingExplorerRef.current = true;
+    document.addEventListener("mousemove", handleResizeExplorer);
+    document.addEventListener("mouseup", stopResizeExplorer);
+  };
+
+  const handleResizeExplorer = (e: MouseEvent) => {
+    if (!isResizingExplorerRef.current) return;
+    const ideCard = document.getElementById("workspace-ide-card");
+    if (!ideCard) return;
+    const rect = ideCard.getBoundingClientRect();
+    let newWidth = e.clientX - rect.left;
+    newWidth = Math.max(120, Math.min(380, newWidth));
+    setExplorerWidth(newWidth);
+  };
+
+  const stopResizeExplorer = () => {
+    isResizingExplorerRef.current = false;
+    document.removeEventListener("mousemove", handleResizeExplorer);
+    document.removeEventListener("mouseup", stopResizeExplorer);
+  };
+
+  const startResizeTerminal = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingTerminalRef.current = true;
+    document.addEventListener("mousemove", handleResizeTerminal);
+    document.addEventListener("mouseup", stopResizeTerminal);
+  };
+
+  const handleResizeTerminal = (e: MouseEvent) => {
+    if (!isResizingTerminalRef.current) return;
+    const ideCard = document.getElementById("workspace-ide-card");
+    if (!ideCard) return;
+    const rect = ideCard.getBoundingClientRect();
+    let newHeight = rect.bottom - e.clientY;
+    newHeight = Math.max(80, Math.min(350, newHeight));
+    setTerminalHeight(newHeight);
+  };
+
+  const stopResizeTerminal = () => {
+    isResizingTerminalRef.current = false;
+    document.removeEventListener("mousemove", handleResizeTerminal);
+    document.removeEventListener("mouseup", stopResizeTerminal);
+  };
 
   const lineIdxRef = useRef<number>(0);
   const variableMapRef = useRef<Record<string, number>>({});
@@ -234,7 +291,6 @@ export default function RobotWorkspaceIDE({
 
     if (simulationState.isRunning || simulationState.status === "paused") {
       stopSimulation();
-      return;
     }
 
     // Cancel any existing compile/upload timeouts
@@ -288,10 +344,14 @@ export default function RobotWorkspaceIDE({
           startGcodeInterpreter();
         } else {
           // General generic board animation blinker logs
+          if (interpreterIntervalRef.current) {
+            clearInterval(interpreterIntervalRef.current);
+          }
           const intervalId = setInterval(() => {
             const pinState = Math.random() > 0.5 ? "HIGH" : "LOW";
             addLog("info", `[Firmware Loop] Pin D13 voltage set to -> [${pinState}]`);
           }, 3000) as any;
+          interpreterIntervalRef.current = intervalId;
           setInterpreterIntervalId(intervalId);
         }
       }, 1500);
@@ -308,7 +368,7 @@ export default function RobotWorkspaceIDE({
 
     // Default base coordinates
     const baseX = 300;
-    const baseY = 290;
+    const baseY = 230;
 
     // Helper to resolve current end-effector position based on active robot design kinematics
     const getEffectorPos = (jointsList: RobotJoint[]) => {
@@ -376,437 +436,463 @@ export default function RobotWorkspaceIDE({
         return;
       }
 
-      if (lineIdx >= codeLines.length) {
-        addLog("success", "CIM assembly sequence fully completed. Simulation sequence reset.");
-        stopSimulation();
-        return;
-      }
-
-      const activeText = codeLines[lineIdx];
-      const trimmedText = activeText.trim();
-      
-      setSimulationState((prev) => ({ ...prev, currentLine: lineIdx + 1 }));
-
-      // 1. Skip completely empty lines
-      if (!trimmedText) {
-        lineIdx++;
-        return;
-      }
-
-      // 2. Parenthetical comments
-      if (trimmedText.startsWith("(")) {
-        const commentContent = trimmedText.replace(/^\(/, "").replace(/\)$/, "").trim();
-        addLog("info", `( ${commentContent} )`);
-        lineIdx++;
-        return;
-      }
-
-      // 3. Command comments prefixing with ; or is a pure comment
-      if (trimmedText.startsWith(";")) {
-        const commentContent = trimmedText.replace(/^;/, "").trim();
-        addLog("info", `; ${commentContent}`);
-        lineIdx++;
-        return;
-      }
-
-      // 4. Variables Definition mapping like #100 = 3000
-      if (trimmedText.startsWith("#") && trimmedText.includes("=")) {
-        const parts = trimmedText.split("=");
-        const varName = parts[0].trim();
-        const varVal = parts[1].split(";")[0].trim();
-        const numVal = parseFloat(varVal);
-        if (varName && !isNaN(numVal)) {
-          variableMap[varName] = numVal;
-          addLog("info", `[Variables] Setting Variable ${varName} = ${numVal}`);
-        }
-        lineIdx++;
-        return;
-      }
-
-      // 5. Repeating loops like O100 REPEAT [9999]
-      if (trimmedText.toUpperCase().includes("REPEAT")) {
-        loopStartIndex = lineIdx;
-        loopCount = 0;
-        const repeatMatch = trimmedText.match(/REPEAT\s*\[?(\d+)\]?/i);
-        maxLoops = repeatMatch ? parseInt(repeatMatch[1]) : 9999;
-        addLog("info", `[Loop Control] Initiating production sequence loop up to ${maxLoops} cycles...`);
-        lineIdx++;
-        return;
-      }
-
-      // 6. Ending loops like O100 ENDREPEAT
-      if (trimmedText.toUpperCase().includes("ENDREPEAT")) {
-        loopCount++;
-        if (loopCount < maxLoops) {
-          lineIdx = loopStartIndex + 1; // repeat from inside loop
-          addLog("info", `[Loop Control] Production cycle ${loopCount} complete. Seamlessly cycling back to start...`);
+      let executeNextInSameTick = true;
+      while (executeNextInSameTick) {
+        if (lineIdx >= codeLines.length) {
+          addLog("success", "CIM assembly sequence fully completed. Simulation sequence reset.");
+          stopSimulation();
           return;
-        } else {
-          addLog("success", `[Loop Control] Production sequence fully satisfied after ${loopCount} continuous runs.`);
+        }
+
+        const activeText = codeLines[lineIdx];
+        const trimmedText = activeText.trim();
+        
+        setSimulationState((prev) => ({ ...prev, currentLine: lineIdx + 1 }));
+
+        // 1. Skip completely empty lines instantly
+        if (!trimmedText) {
           lineIdx++;
-          return;
+          continue;
         }
-      }
 
-      // Resolve variables inside G-code parameters e.g. F[#101]
-      let resolvedText = activeText;
-      for (const [key, value] of Object.entries(variableMap)) {
-        resolvedText = resolvedText.replace(new RegExp(`\\[?${key}\\]?`, "g"), value.toString());
-      }
+        // 2. Parenthetical comments instantly
+        if (trimmedText.startsWith("(")) {
+          const commentContent = trimmedText.replace(/^\(/, "").replace(/\)$/, "").trim();
+          addLog("info", `( ${commentContent} )`);
+          lineIdx++;
+          continue;
+        }
 
-      const parsed = parseGcodeLine(resolvedText);
-      if (parsed) {
-        if (parsed.command === "COMMENT") {
-          if (parsed.comment) {
-             addLog("info", `; ${parsed.comment}`);
+        // 3. Command comments prefixing with ; or is a pure comment instantly
+        if (trimmedText.startsWith(";")) {
+          const commentContent = trimmedText.replace(/^;/, "").trim();
+          addLog("info", `; ${commentContent}`);
+          lineIdx++;
+          continue;
+        }
+
+        // 4. Variables Definition mapping like #100 = 3000 instantly
+        if (trimmedText.startsWith("#") && trimmedText.includes("=")) {
+          const parts = trimmedText.split("=");
+          const varName = parts[0].trim();
+          const varVal = parts[1].split(";")[0].trim();
+          const numVal = parseFloat(varVal);
+          if (varName && !isNaN(numVal)) {
+            variableMap[varName] = numVal;
+            addLog("info", `[Variables] Setting Variable ${varName} = ${numVal}`);
           }
-        } else {
-          // Dynamic execution logs
-          addLog("success", `[LINE ${lineIdx + 1}] Executing: ${parsed.command} ${JSON.stringify(parsed.params)}`);
+          lineIdx++;
+          continue;
+        }
 
-          // Process known instructions
-          switch (parsed.command) {
-            case "G00":
-            case "G01": {
-              // Coordinated joints & planar kinematics solver
-              const hasCoords = parsed.params.X !== undefined || parsed.params.Y !== undefined || parsed.params.Z !== undefined;
-              const hasA = parsed.params.A !== undefined;
-              const hasB = parsed.params.B !== undefined;
+        // 5. Repeating loops like O100 REPEAT [9999] instantly
+        if (trimmedText.toUpperCase().includes("REPEAT")) {
+          loopStartIndex = lineIdx;
+          loopCount = 0;
+          const repeatMatch = trimmedText.match(/REPEAT\s*\[?(\d+)\]?/i);
+          maxLoops = repeatMatch ? parseInt(repeatMatch[1]) : 9999;
+          addLog("info", `[Loop Control] Initiating production sequence loop up to ${maxLoops} cycles...`);
+          lineIdx++;
+          continue;
+        }
 
-              // Read joints state relative to jointsRef.current to avoid stale references
-              const startJoints = jointsRef.current.map(j => ({ ...j }));
-              let nextJoints = jointsRef.current.map(j => ({ ...j }));
+        // 6. Ending loops like O100 ENDREPEAT instantly
+        if (trimmedText.toUpperCase().includes("ENDREPEAT")) {
+          loopCount++;
+          if (loopCount < maxLoops) {
+            lineIdx = loopStartIndex + 1; // repeat from inside loop
+            addLog("info", `[Loop Control] Production cycle ${loopCount} complete. Seamlessly cycling back to start...`);
+            continue;
+          } else {
+            addLog("success", `[Loop Control] Production sequence fully satisfied after ${loopCount} continuous runs.`);
+            lineIdx++;
+            continue;
+          }
+        }
 
-              // 1. Update Base joint (Waist) from B parameter (simulated swivel)
-              if (hasB) {
-                const valB = parsed.params.B ?? 0;
-                nextJoints = nextJoints.map(j => j.id === "base" ? { ...j, angle: Math.max(j.minAngle, Math.min(valB, j.maxAngle)) } : j);
-              }
+        // Resolve variables inside G-code parameters e.g. F[#101]
+        let resolvedText = activeText;
+        for (const [key, value] of Object.entries(variableMap)) {
+          resolvedText = resolvedText.replace(new RegExp(`\\[?${key}\\]?`, "g"), value.toString());
+        }
 
-              // 2. Update Wrist Pitch joint from A parameter
-              if (hasA) {
-                const valA = parsed.params.A ?? 0;
-                nextJoints = nextJoints.map(j => j.id === "wrist" ? { ...j, angle: Math.max(j.minAngle, Math.min(valA, j.maxAngle)) } : j);
-              }
+        const parsed = parseGcodeLine(resolvedText);
+        if (parsed) {
+          if (parsed.command === "COMMENT") {
+            if (parsed.comment) {
+               addLog("info", `; ${parsed.comment}`);
+            }
+            lineIdx++;
+            continue;
+          } else {
+            // Dynamic execution logs
+            addLog("success", `[LINE ${lineIdx + 1}] Executing: ${parsed.command} ${JSON.stringify(parsed.params)}`);
 
-              // 3. Resolve planar tool coordinates X, Y, Z
-              if (hasCoords) {
-                const mmScale = 1.5;
+            let stepShouldPauseTick = false;
 
-                // Retrieve current real-world coordinates from previous joints list to preserve state
-                const currentEffector = getEffectorPos(startJoints);
-                let currentX_mm = (currentEffector.x - baseX) * mmScale;
-                let currentZ_mm = (baseY - currentEffector.y) * mmScale;
-                if (isNaN(currentX_mm) || !isFinite(currentX_mm)) currentX_mm = 0;
-                if (isNaN(currentZ_mm) || !isFinite(currentZ_mm)) currentZ_mm = 0;
+            // Process known instructions
+            switch (parsed.command) {
+              case "G00":
+              case "G01": {
+                // Coordinated joints & planar kinematics solver
+                const hasCoords = parsed.params.X !== undefined || parsed.params.Y !== undefined || parsed.params.Z !== undefined;
+                const hasA = parsed.params.A !== undefined;
+                const hasB = parsed.params.B !== undefined;
 
-                const rawX = parsed.params.X !== undefined ? parsed.params.X : currentX_mm;
-                const rawZ = parsed.params.Z !== undefined ? parsed.params.Z : (parsed.params.Y !== undefined ? parsed.params.Y : currentZ_mm);
-                
-                const pixelsX = baseX + rawX / mmScale;
-                const pixelsY = baseY - rawZ / mmScale;
+                // Read joints state relative to jointsRef.current to avoid stale references
+                const startJoints = jointsRef.current.map(j => ({ ...j }));
+                let nextJoints = jointsRef.current.map(j => ({ ...j }));
 
-                if (robotType === "cartesian") {
-                  let carriageX = pixelsX;
-                  if (carriageX < 70) carriageX = 70;
-                  if (carriageX > 530) carriageX = 530;
-                  const targetJ1Angle = (carriageX - baseX) / 1.45;
-
-                  const railY = 110;
-                  let targetPlungeY = pixelsY - 12;
-                  if (targetPlungeY < railY + 80) targetPlungeY = railY + 80;
-                  if (targetPlungeY > railY + 190) targetPlungeY = railY + 190;
-
-                  const targetPlungeHeight = targetPlungeY - railY;
-                  const targetJ2Angle = ((targetPlungeHeight - 80) / 110) * 240 - 120;
-
-                  nextJoints = nextJoints.map((j) => {
-                    if (j.id === "shoulder") return { ...j, angle: Math.round(targetJ1Angle) };
-                    if (j.id === "elbow") return { ...j, angle: Math.round(targetJ2Angle) };
-                    return j;
-                  });
-                } else if (robotType === "scara") {
-                  const postHeight = 110;
-                  const originX = baseX;
-                  const originY = baseY - postHeight; // (300, 180)
-
-                  const l1 = nextJoints.find(j => j.id === "shoulder")?.length ?? 110;
-                  const l2 = nextJoints.find(j => j.id === "elbow")?.length ?? 100;
-                  const totalMaxReach = l1 + l2;
-
-                  let tx = pixelsX - originX;
-                  let ty = pixelsY - originY - 35; // adjust for wrist plunge guiding
-                  const dist = Math.hypot(tx, ty);
-
-                  if (dist > totalMaxReach) {
-                    tx *= (totalMaxReach / dist) * 0.98;
-                    ty *= (totalMaxReach / dist) * 0.98;
-                  }
-
-                  // Analytical SCARA planar forearm solver
-                  const denom = 2 * l1 * l2;
-                  const cosAngle2 = denom === 0 ? 0 : Math.max(-1, Math.min(1, (tx * tx + ty * ty - l1 * l1 - l2 * l2) / denom));
-                  const sinAngle2 = Math.sqrt(Math.max(0, 1 - cosAngle2 * cosAngle2));
-                  const angle2Rad = Math.atan2(sinAngle2, cosAngle2);
-
-                  const k1 = l1 + l2 * cosAngle2;
-                  const k2 = l2 * sinAngle2;
-                  const angle1Rad = Math.atan2(ty, tx) - Math.atan2(k2, k1);
-
-                  const a1Deg = (angle1Rad * 180) / Math.PI;
-                  const a2Deg = (angle2Rad * 180) / Math.PI;
-
-                  const currentPlungeY = pixelsY - (originY + l1 * Math.sin(angle1Rad) + l2 * Math.sin(angle1Rad + angle2Rad));
-                  const targetJ3Angle = ((currentPlungeY - 25) / 110) * 240 - 120;
-
-                  nextJoints = nextJoints.map((j) => {
-                    if (j.id === "shoulder") {
-                      const bonded = Math.max(j.minAngle, Math.min(a1Deg, j.maxAngle));
-                      return { ...j, angle: Math.round(bonded * 10) / 10 };
-                    }
-                    if (j.id === "elbow") {
-                      const bonded = Math.max(j.minAngle, Math.min(a2Deg, j.maxAngle));
-                      return { ...j, angle: Math.round(bonded * 10) / 10 };
-                    }
-                    if (j.id === "wrist" && !hasA) {
-                      const bonded = Math.max(j.minAngle, Math.min(targetJ3Angle, j.maxAngle));
-                      return { ...j, angle: Math.round(bonded * 10) / 10 };
-                    }
-                    return j;
-                  });
-                } else {
-                  // Standard Articulated
-                  const clickX = pixelsX;
-                  const clickY = pixelsY;
-                  const distToClick = Math.hypot(clickX - baseX, clickY - baseY);
-                  const totalMaxReach = nextJoints.slice(1).reduce((sum, j) => sum + j.length, 0);
-
-                  let targetX = clickX;
-                  let targetY = clickY;
-
-                  if (distToClick > totalMaxReach) {
-                    const ratio = totalMaxReach / distToClick;
-                    targetX = baseX + (clickX - baseX) * ratio * 0.98;
-                    targetY = baseY + (clickY - baseY) * ratio * 0.98;
-                  }
-
-                  nextJoints = solveInverseKinematics(baseX, baseY, nextJoints, { x: targetX, y: targetY });
+                // 1. Update Base joint (Waist) from B parameter (simulated swivel)
+                if (hasB) {
+                  const valB = parsed.params.B ?? 0;
+                  nextJoints = nextJoints.map(j => j.id === "base" ? { ...j, angle: Math.max(j.minAngle, Math.min(valB, j.maxAngle)) } : j);
                 }
-              }
 
-              // Safeguard angles to avoid NaN propagation
-              nextJoints = nextJoints.map(j => {
-                if (isNaN(j.angle) || !isFinite(j.angle)) {
-                  // Fall back smoothly to its start angle to preserve visual integrity
-                  const match = startJoints.find(sj => sj.id === j.id);
-                  return { ...j, angle: match ? match.angle : 0 };
+                // 2. Update Wrist Pitch joint from A parameter
+                if (hasA) {
+                  const valA = parsed.params.A ?? 0;
+                  nextJoints = nextJoints.map(j => j.id === "wrist" ? { ...j, angle: Math.max(j.minAngle, Math.min(valA, j.maxAngle)) } : j);
                 }
-                return j;
-              });
 
-              setJoints(nextJoints);
-              break;
-            }
-            case "M03": {
-              // Toggle conveyor relay (S parameter: S1 is start, S0 is halt)
-              const statusVal = parsed.params.S === 1;
-              setSimulationState((prev) => ({ ...prev, conveyorRunning: statusVal }));
-              addLog("warn", `[Relay Out] Conveyor Motor feedback is reset to State => [${statusVal ? "ACTIVE" : "HALTED"}]`);
-              break;
-            }
-            case "M04": {
-              // Breakbeam optical photo-detector state checks
-              addLog("info", "[Sensor Trip] Beam break laser status verified.");
-              break;
-            }
-            case "M66": {
-              // REAL-TIME DIGITAL HARDWARE INTERLOCK SENSOR POLLING!
-              const currentWorkpieces = workpiecesRef.current;
-              const currentSensorX = sensorPositionXRef.current;
-              const sensorActive = currentWorkpieces.some(wp => 
-                wp.positionX >= currentSensorX - 15 && 
-                wp.positionX <= currentSensorX + 15 && 
-                wp.status === "approaching"
-              );
-              
-              if (!sensorActive) {
-                if (!waitingOnSensorRef.current) {
-                  addLog("info", `[M66 SENSOR INTERLOCK] Pausing routine. Polling Input #1 (IRSENS @ ${currentSensorX}mm) to go HIGH...`);
-                  waitingOnSensorRef.current = true;
-                }
-                // Do not increment lineIdx so we stay on this interlock line on next interval tick!
-                return;
-              } else {
-                addLog("success", `[M66 SENSOR INTERLOCK] Hardware flag met! Laser Photo-Detector detected incoming part.`);
-                waitingOnSensorRef.current = false;
-                // fall through and execute next line on next tick!
-              }
-              break;
-            }
-            case "M05": {
-              // Solenoid magnetic vacuum effector state toggles (P1 holds, P0 releases)
-              const hasGripped = parsed.params.P === 1;
-              setSimulationState((prev) => ({ ...prev, hasBlock: hasGripped }));
+                // 3. Resolve planar tool coordinates X, Y, Z
+                if (hasCoords) {
+                  const mmScale = 1.5;
 
-              // Dynamic color scanning calibration: update variableMap for sorting bin X coordinates (#104)
-              if (hasGripped) {
-                const sensorX = sensorPositionXRef.current;
-                const grippedWp = workpiecesRef.current.find(wp => 
-                  wp.status === "approaching" && 
-                  wp.positionX >= sensorX - 15 && 
-                  wp.positionX <= sensorX + 15
-                );
+                  // Retrieve current real-world coordinates from previous joints list to preserve state
+                  const currentEffector = getEffectorPos(startJoints);
+                  let currentX_mm = (currentEffector.x - baseX) * mmScale;
+                  let currentZ_mm = (baseY - currentEffector.y) * mmScale;
+                  if (isNaN(currentX_mm) || !isFinite(currentX_mm)) currentX_mm = 0;
+                  if (isNaN(currentZ_mm) || !isFinite(currentZ_mm)) currentZ_mm = 0;
 
-                if (grippedWp) {
-                  let targetX = 315; // default fallback reject (FAULTY REJECT SLOT)
-                  if (grippedWp.color === "red") targetX = 255;
-                  else if (grippedWp.color === "green") targetX = 195;
-                  else if (grippedWp.color === "blue") targetX = 135;
-                  else if (grippedWp.color === "yellow") targetX = 315;
+                  const rawX = parsed.params.X !== undefined ? parsed.params.X : currentX_mm;
+                  const rawZ = parsed.params.Z !== undefined ? parsed.params.Z : (parsed.params.Y !== undefined ? parsed.params.Y : currentZ_mm);
                   
-                  variableMap["#104"] = targetX;
-                  addLog("info", `[Sensor Color Calibration] Auto-computed dynamic sorting coordinate for [color=${grippedWp.color.toUpperCase()}]: [#104 = ${targetX}mm]`);
+                  const pixelsX = baseX + rawX / mmScale;
+                  const pixelsY = baseY - rawZ / mmScale;
+
+                  if (robotType === "cartesian") {
+                    let carriageX = pixelsX;
+                    if (carriageX < 70) carriageX = 70;
+                    if (carriageX > 530) carriageX = 530;
+                    const targetJ1Angle = (carriageX - baseX) / 1.45;
+
+                    const railY = 110;
+                    let targetPlungeY = pixelsY - 12;
+                    if (targetPlungeY < railY + 80) targetPlungeY = railY + 80;
+                    if (targetPlungeY > railY + 190) targetPlungeY = railY + 190;
+
+                    const targetPlungeHeight = targetPlungeY - railY;
+                    const targetJ2Angle = ((targetPlungeHeight - 80) / 110) * 240 - 120;
+
+                    nextJoints = nextJoints.map((j) => {
+                      if (j.id === "shoulder") return { ...j, angle: Math.round(targetJ1Angle) };
+                      if (j.id === "elbow") return { ...j, angle: Math.round(targetJ2Angle) };
+                      return j;
+                    });
+                  } else if (robotType === "scara") {
+                    const postHeight = 110;
+                    const originX = baseX;
+                    const originY = baseY - postHeight; // (300, 180)
+
+                    const l1 = nextJoints.find(j => j.id === "shoulder")?.length ?? 110;
+                    const l2 = nextJoints.find(j => j.id === "elbow")?.length ?? 100;
+                    const totalMaxReach = l1 + l2;
+
+                    let tx = pixelsX - originX;
+                    let ty = pixelsY - originY - 35; // adjust for wrist plunge guiding
+                    const dist = Math.hypot(tx, ty);
+
+                    if (dist > totalMaxReach) {
+                      tx *= (totalMaxReach / dist) * 0.98;
+                      ty *= (totalMaxReach / dist) * 0.98;
+                    }
+
+                    // Analytical SCARA planar forearm solver
+                    const denom = 2 * l1 * l2;
+                    const cosAngle2 = denom === 0 ? 0 : Math.max(-1, Math.min(1, (tx * tx + ty * ty - l1 * l1 - l2 * l2) / denom));
+                    const sinAngle2 = Math.sqrt(Math.max(0, 1 - cosAngle2 * cosAngle2));
+                    const angle2Rad = Math.atan2(sinAngle2, cosAngle2);
+
+                    const k1 = l1 + l2 * cosAngle2;
+                    const k2 = l2 * sinAngle2;
+                    const angle1Rad = Math.atan2(ty, tx) - Math.atan2(k2, k1);
+
+                    const a1Deg = (angle1Rad * 180) / Math.PI;
+                    const a2Deg = (angle2Rad * 180) / Math.PI;
+
+                    const currentPlungeY = pixelsY - (originY + l1 * Math.sin(angle1Rad) + l2 * Math.sin(angle1Rad + angle2Rad));
+                    const targetJ3Angle = ((currentPlungeY - 25) / 110) * 240 - 120;
+
+                    nextJoints = nextJoints.map((j) => {
+                      if (j.id === "shoulder") {
+                        const bonded = Math.max(j.minAngle, Math.min(a1Deg, j.maxAngle));
+                        return { ...j, angle: Math.round(bonded * 10) / 10 };
+                      }
+                      if (j.id === "elbow") {
+                        const bonded = Math.max(j.minAngle, Math.min(a2Deg, j.maxAngle));
+                        return { ...j, angle: Math.round(bonded * 10) / 10 };
+                      }
+                      if (j.id === "wrist" && !hasA) {
+                        const bonded = Math.max(j.minAngle, Math.min(targetJ3Angle, j.maxAngle));
+                        return { ...j, angle: Math.round(bonded * 10) / 10 };
+                      }
+                      return j;
+                    });
+                  } else {
+                    // Standard Articulated
+                    const clickX = pixelsX;
+                    const clickY = pixelsY;
+                    const distToClick = Math.hypot(clickX - baseX, clickY - baseY);
+                    const totalMaxReach = nextJoints.slice(1).reduce((sum, j) => sum + j.length, 0);
+
+                    let targetX = clickX;
+                    let targetY = clickY;
+
+                    if (distToClick > totalMaxReach) {
+                      const ratio = totalMaxReach / distToClick;
+                      targetX = baseX + (clickX - baseX) * ratio * 0.98;
+                      targetY = baseY + (clickY - baseY) * ratio * 0.98;
+                    }
+
+                    nextJoints = solveInverseKinematics(baseX, baseY, nextJoints, { x: targetX, y: targetY });
+                  }
                 }
-              }
-              
-              // Forward kinematics calculation to locate dropping/holding coordinates based on actual joints
-              const endEffectorPoint = getEffectorPos(jointsRef.current);
-              const dropX = endEffectorPoint.x;
-              const dropY = endEffectorPoint.y;
 
-              let grabbedAny = false;
-              setWorkpieces((prev) => {
-                const updated = prev.map((wp) => {
-                  if (wp.status === "approaching" && hasGripped) {
-                    // Grab if workpiece X matches actual gripper X (within 24px) 
-                    // and gripper is sufficiently low (near conveyor bed level)
-                    const xDiff = Math.abs(wp.positionX - dropX);
-                    const isNearGripper = xDiff <= 24 && dropY >= 235;
-                    if (isNearGripper) {
-                      addLog("warn", `[Actuator] Pneumatic suction solenoid: ENGAGED [${wp.color.toUpperCase()} securely grasped at X=${Math.round(wp.positionX)}px]`);
-                      grabbedAny = true;
-                      return { ...wp, status: "picked" as const };
-                    }
+                // Safeguard angles to avoid NaN propagation
+                nextJoints = nextJoints.map(j => {
+                  if (isNaN(j.angle) || !isFinite(j.angle)) {
+                    // Fall back smoothly to its start angle to preserve visual integrity
+                    const match = startJoints.find(sj => sj.id === j.id);
+                    return { ...j, angle: match ? match.angle : 0 };
                   }
-                  if (wp.status === "picked" && !hasGripped) {
-                    addLog("warn", `[Actuator] Pneumatic suction solenoid: DE-ENERGIZED [Releasing workpiece at Drop-X=${Math.round(dropX)}px]`);
-                    
-                    let targetStatus: "placed" | "rejected" | "dropped" = "dropped";
-                    let isCorrect = false;
-                    let trayName = "Ground Workspace";
-
-                    // Determine landing slots bases:
-                    // Blue Slot: Center X = 390 (370-410)
-                    // Green Slot: Center X = 430 (410-450)
-                    // Red Slot: Center X = 470 (450-490)
-                    // Reject Slot: Center X = 510 (490-535)
-                    if (dropX >= 450 && dropX <= 490) {
-                      trayName = "RED SORTING BIN";
-                      if (wp.color === "red") {
-                        isCorrect = true;
-                        targetStatus = "placed";
-                      } else {
-                        targetStatus = "rejected";
-                      }
-                    } else if (dropX >= 410 && dropX < 450) {
-                      trayName = "GREEN SORTING BIN";
-                      if (wp.color === "green") {
-                        isCorrect = true;
-                        targetStatus = "placed";
-                      } else {
-                        targetStatus = "rejected";
-                      }
-                    } else if (dropX >= 370 && dropX < 410) {
-                      trayName = "BLUE SORTING BIN";
-                      if (wp.color === "blue") {
-                        isCorrect = true;
-                        targetStatus = "placed";
-                      } else {
-                        targetStatus = "rejected";
-                      }
-                    } else if (dropX > 490 && dropX <= 545) {
-                      trayName = "FAULTY REJECT SLOT";
-                      if (wp.color === "yellow") {
-                        isCorrect = true;
-                        targetStatus = "rejected";
-                      } else {
-                        targetStatus = "placed"; // improper placement
-                      }
-                    }
-
-                    // Increment and report stats securely
-                    if (targetStatus === "dropped") {
-                      addLog("error", `[Mechanical Error] Suction release failed to hit bins! Material crashed to floor at X=${Math.round(dropX)}.`);
-                      setSortingStats(s => ({ ...s, dropped: s.dropped + 1 }));
-                    } else if (isCorrect) {
-                      addLog("success", `[PLC Sorter] VERIFIED! Color ${wp.color.toUpperCase()} correctly deposited in ${trayName}.`);
-                      setSortingStats(s => {
-                        const clone = { ...s };
-                        if (wp.color === "red") clone.correctRed += 1;
-                        if (wp.color === "green") clone.correctGreen += 1;
-                        if (wp.color === "blue") clone.correctBlue += 1;
-                        if (wp.color === "yellow") clone.correctYellow += 1;
-                        return clone;
-                      });
-                    } else {
-                      addLog("error", `[PLC Operational Conflict] SORT MISTAKE! Color ${wp.color.toUpperCase()} workpiece misaligned into ${trayName}!`);
-                      setSortingStats(s => ({ ...s, incorrect: s.incorrect + 1 }));
-                    }
-
-                    return { ...wp, status: targetStatus, positionX: dropX };
-                  }
-                  return wp;
+                  return j;
                 });
 
-                if (hasGripped && !grabbedAny) {
-                  const approachingWps = prev.filter(wp => wp.status === "approaching");
-                  if (approachingWps.length > 0) {
-                    const closest = approachingWps.reduce((prevWp, currWp) => 
-                      Math.abs(currWp.positionX - dropX) < Math.abs(prevWp.positionX - dropX) ? currWp : prevWp
-                    );
-                    const xDiff = Math.abs(closest.positionX - dropX);
-                    addLog("warn", `[Actuator Warning] Solenoid activated but missed workpiece! Closest part at X=${Math.round(closest.positionX)}px. Gripper: X=${Math.round(dropX)}px (diff=${Math.round(xDiff)}px, limit 24px), Y=${Math.round(dropY)}px (limit Y>=235px).`);
-                  } else {
-                    addLog("info", `[Actuator] Solenoid activated but no approaching parts on conveyor.`);
+                jointsRef.current = nextJoints;
+                setJoints(nextJoints);
+                stepShouldPauseTick = true; // Wait for next tick so the physics/UI has a cycle to render and animate
+                break;
+              }
+              case "M03": {
+                // Toggle conveyor relay (S parameter: S1 is start, S0 is halt)
+                const statusVal = parsed.params.S === 1;
+                setSimulationState((prev) => ({ ...prev, conveyorRunning: statusVal }));
+                addLog("warn", `[Relay Out] Conveyor Motor feedback is reset to State => [${statusVal ? "ACTIVE" : "HALTED"}]`);
+                break;
+              }
+              case "M04": {
+                // Breakbeam optical photo-detector state checks
+                addLog("info", "[Sensor Trip] Beam break laser status verified.");
+                break;
+              }
+              case "M66": {
+                // REAL-TIME DIGITAL HARDWARE INTERLOCK SENSOR POLLING!
+                const currentWorkpieces = workpiecesRef.current;
+                const currentSensorX = sensorPositionXRef.current;
+                const sensorActive = currentWorkpieces.some(wp => 
+                  wp.positionX >= currentSensorX - 15 && 
+                  wp.positionX <= currentSensorX + 15 && 
+                  wp.status === "approaching"
+                );
+                
+                if (!sensorActive) {
+                  if (!waitingOnSensorRef.current) {
+                    addLog("info", `[M66 SENSOR INTERLOCK] Pausing routine. Polling Input #1 (IRSENS @ ${currentSensorX}mm) to go HIGH...`);
+                    waitingOnSensorRef.current = true;
                   }
+                  // Pause loop and wait for next tick to poll again
+                  executeNextInSameTick = false;
+                  return;
+                } else {
+                  addLog("success", `[M66 SENSOR INTERLOCK] Hardware flag met! Laser Photo-Detector detected incoming part.`);
+                  waitingOnSensorRef.current = false;
+                }
+                break;
+              }
+              case "M05": {
+                // Solenoid magnetic vacuum effector state toggles (P1 holds, P0 releases)
+                const commandGripped = parsed.params.P === 1;
+                const isDryRun = !!simulationStateRef.current.dryRunMode;
+                const hasGripped = commandGripped && !isDryRun;
+
+                if (commandGripped && isDryRun) {
+                  addLog("warn", "[DRY RUN Interlock] Suction solenoid activated, but physical suction state is BYPASSED because DRY RUN MODE is ACTIVE.");
                 }
 
-                return updated;
-              });
-              break;
-            }
-            case "M09": {
-              // Complete cycle alert sound strobe
-              addLog("success", "[SYSTEM] Cycle completion strobe code alert trigger successfully.");
-              break;
-            }
-            case "M30": {
-              addLog("success", "M30 Program end execution. Resetting controller home state.");
-              stopSimulation();
-              return;
-            }
-            case "G04": {
-              // Hold/dwell delay action parameter
-              const ms = parsed.params.P || 1000;
-              const ticks = Math.max(1, Math.round(ms / currentSpeed));
-              activeDelayTicks = ticks;
-              addLog("info", `[Dwell] Delaying action execution loop for ${ms}ms (~${ticks} steps).`);
-              break;
-            }
-            default:
-              addLog("warn", `Command not mapped locally: ${parsed.command}`);
-          }
-        }
-      }
+                setSimulationState((prev) => ({ ...prev, hasBlock: hasGripped }));
 
-      lineIdx++;
-      if (isSteppingRef.current) {
-        isSteppingRef.current = false;
-        lineIdxRef.current = lineIdx;
-        pauseSimulation();
-      }
+                // Dynamic color scanning calibration: update variableMap for sorting bin X coordinates (#104)
+                if (hasGripped) {
+                  const sensorX = sensorPositionXRef.current;
+                  const grippedWp = workpiecesRef.current.find(wp => 
+                    wp.status === "approaching" && 
+                    wp.positionX >= sensorX - 15 && 
+                    wp.positionX <= sensorX + 15
+                  );
+
+                  if (grippedWp) {
+                    let targetX = 315; // default fallback reject (FAULTY REJECT SLOT)
+                    if (grippedWp.color === "red") targetX = 255;
+                    else if (grippedWp.color === "green") targetX = 195;
+                    else if (grippedWp.color === "blue") targetX = 135;
+                    else if (grippedWp.color === "yellow") targetX = 315;
+                    
+                    variableMap["#104"] = targetX;
+                    addLog("info", `[Sensor Color Calibration] Auto-computed dynamic sorting coordinate for [color=${grippedWp.color.toUpperCase()}]: [#104 = ${targetX}mm]`);
+                  }
+                }
+                
+                // Forward kinematics calculation to locate dropping/holding coordinates based on actual joints
+                const endEffectorPoint = getEffectorPos(jointsRef.current);
+                const dropX = endEffectorPoint.x;
+                const dropY = endEffectorPoint.y;
+
+                let grabbedAny = false;
+                setWorkpieces((prev) => {
+                  const updated = prev.map((wp) => {
+                    if (wp.status === "approaching" && hasGripped) {
+                      // Grab if workpiece X matches actual gripper X (within 24px) 
+                      // and gripper is sufficiently low (near conveyor bed level)
+                      const xDiff = Math.abs(wp.positionX - dropX);
+                      const isNearGripper = xDiff <= 24 && dropY >= 235;
+                      if (isNearGripper) {
+                        addLog("warn", `[Actuator] Pneumatic suction solenoid: ENGAGED [${wp.color.toUpperCase()} securely grasped at X=${Math.round(wp.positionX)}px]`);
+                        grabbedAny = true;
+                        return { ...wp, status: "picked" as const };
+                      }
+                    }
+                    if (wp.status === "picked" && !hasGripped) {
+                      addLog("warn", `[Actuator] Pneumatic suction solenoid: DE-ENERGIZED [Releasing workpiece at Drop-X=${Math.round(dropX)}px]`);
+                      
+                      let targetStatus: "placed" | "rejected" | "dropped" = "dropped";
+                      let isCorrect = false;
+                      let trayName = "Ground Workspace";
+
+                      // Determine landing slots bases:
+                      // Blue Slot: Center X = 390 (370-410)
+                      // Green Slot: Center X = 430 (410-450)
+                      // Red Slot: Center X = 470 (450-490)
+                      // Reject Slot: Center X = 510 (490-535)
+                      if (dropX >= 450 && dropX <= 490) {
+                        trayName = "RED SORTING BIN";
+                        if (wp.color === "red") {
+                          isCorrect = true;
+                          targetStatus = "placed";
+                        } else {
+                          targetStatus = "rejected";
+                        }
+                      } else if (dropX >= 410 && dropX < 450) {
+                        trayName = "GREEN SORTING BIN";
+                        if (wp.color === "green") {
+                          isCorrect = true;
+                          targetStatus = "placed";
+                        } else {
+                          targetStatus = "rejected";
+                        }
+                      } else if (dropX >= 370 && dropX < 410) {
+                        trayName = "BLUE SORTING BIN";
+                        if (wp.color === "blue") {
+                          isCorrect = true;
+                          targetStatus = "placed";
+                        } else {
+                          targetStatus = "rejected";
+                        }
+                      } else if (dropX > 490 && dropX <= 545) {
+                        trayName = "FAULTY REJECT SLOT";
+                        if (wp.color === "yellow") {
+                          isCorrect = true;
+                          targetStatus = "rejected";
+                        } else {
+                          targetStatus = "placed"; // improper placement
+                        }
+                      }
+
+                      // Increment and report stats securely
+                      if (targetStatus === "dropped") {
+                        addLog("error", `[Mechanical Error] Suction release failed to hit bins! Material crashed to floor at X=${Math.round(dropX)}.`);
+                        setSortingStats(s => ({ ...s, dropped: s.dropped + 1 }));
+                      } else if (isCorrect) {
+                        addLog("success", `[PLC Sorter] VERIFIED! Color ${wp.color.toUpperCase()} correctly deposited in ${trayName}.`);
+                        setSortingStats(s => {
+                          const clone = { ...s };
+                          if (wp.color === "red") clone.correctRed += 1;
+                          if (wp.color === "green") clone.correctGreen += 1;
+                          if (wp.color === "blue") clone.correctBlue += 1;
+                          if (wp.color === "yellow") clone.correctYellow += 1;
+                          return clone;
+                        });
+                      } else {
+                        addLog("error", `[PLC Operational Conflict] SORT MISTAKE! Color ${wp.color.toUpperCase()} workpiece misaligned into ${trayName}!`);
+                        setSortingStats(s => ({ ...s, incorrect: s.incorrect + 1 }));
+                      }
+
+                      return { ...wp, status: targetStatus, positionX: dropX };
+                    }
+                    return wp;
+                  });
+
+                  if (hasGripped && !grabbedAny) {
+                    const approachingWps = prev.filter(wp => wp.status === "approaching");
+                    if (approachingWps.length > 0) {
+                      const closest = approachingWps.reduce((prevWp, currWp) => 
+                        Math.abs(currWp.positionX - dropX) < Math.abs(prevWp.positionX - dropX) ? currWp : prevWp
+                      );
+                      const xDiff = Math.abs(closest.positionX - dropX);
+                      addLog("warn", `[Actuator Warning] Solenoid activated but missed workpiece! Closest part at X=${Math.round(closest.positionX)}px. Gripper: X=${Math.round(dropX)}px (diff=${Math.round(xDiff)}px, limit 24px), Y=${Math.round(dropY)}px (limit Y>=235px).`);
+                    } else {
+                      addLog("info", `[Actuator] Solenoid activated but no approaching parts on conveyor.`);
+                    }
+                  }
+
+                  return updated;
+                });
+                break;
+              }
+              case "M09": {
+                // Complete cycle alert sound strobe
+                addLog("success", "[SYSTEM] Pulse completion strobe alert successfully.");
+                break;
+              }
+              case "M30": {
+                addLog("success", "M30 Program end execution. Resetting controller home state.");
+                stopSimulation();
+                return;
+              }
+              case "G04": {
+                // Hold/dwell delay action parameter
+                const ms = parsed.params.P || 1000;
+                const ticks = Math.max(1, Math.round(ms / currentSpeed));
+                activeDelayTicks = ticks;
+                addLog("info", `[Dwell] Delaying action execution loop for ${ms}ms (~${ticks} steps).`);
+                stepShouldPauseTick = true;
+                break;
+              }
+              default:
+                addLog("warn", `Command not mapped locally: ${parsed.command}`);
+            }
+
+            lineIdx++;
+            if (isSteppingRef.current) {
+              isSteppingRef.current = false;
+              lineIdxRef.current = lineIdx;
+              pauseSimulation();
+              executeNextInSameTick = false;
+            } else if (stepShouldPauseTick) {
+              executeNextInSameTick = false;
+            }
+          }
+        } else {
+          // Skip unparsed/invalid statements instantly
+          lineIdx++;
+        }
+      } // end while loop
+
+      lineIdxRef.current = lineIdx;
     }, currentSpeed) as any;
 
+    interpreterIntervalRef.current = intervalId;
     setInterpreterIntervalId(intervalId);
   };
 
@@ -815,10 +901,11 @@ export default function RobotWorkspaceIDE({
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
-    if (interpreterIntervalId) {
-      clearInterval(interpreterIntervalId);
-      setInterpreterIntervalId(null);
+    if (interpreterIntervalRef.current) {
+      clearInterval(interpreterIntervalRef.current);
+      interpreterIntervalRef.current = null;
     }
+    setInterpreterIntervalId(null);
     setSimulationState((prev) => ({
       ...prev,
       status: "paused"
@@ -860,10 +947,12 @@ export default function RobotWorkspaceIDE({
       animationFrameRef.current = null;
     }
 
-    if (interpreterIntervalId) {
-      clearInterval(interpreterIntervalId);
-      setInterpreterIntervalId(null);
+    if (interpreterIntervalRef.current) {
+      clearInterval(interpreterIntervalRef.current);
+      interpreterIntervalRef.current = null;
     }
+    setInterpreterIntervalId(null);
+
     setSimulationState((prev) => ({
       ...prev,
       isRunning: false,
@@ -879,22 +968,99 @@ export default function RobotWorkspaceIDE({
 
   // Active Safety Watchdog - Emergency Collision Shutdown
   useEffect(() => {
-    if (simulationState.status === "error" && interpreterIntervalId) {
-      clearInterval(interpreterIntervalId);
+    if (simulationState.status === "error") {
+      if (interpreterIntervalRef.current) {
+        clearInterval(interpreterIntervalRef.current);
+        interpreterIntervalRef.current = null;
+      }
       setInterpreterIntervalId(null);
       addLog("error", "[EMERGENCY COLLISION TRIPPED] Robotic arm breach detected at safety containment shield! Hardware safety interlock activated.");
     }
-  }, [simulationState.status, interpreterIntervalId]);
+  }, [simulationState.status]);
 
   // Clean-up loop on unmount
   useEffect(() => {
     return () => {
-      if (interpreterIntervalId) clearInterval(interpreterIntervalId);
+      if (interpreterIntervalRef.current) {
+        clearInterval(interpreterIntervalRef.current);
+        interpreterIntervalRef.current = null;
+      }
       if (compileTimeoutRef.current) clearTimeout(compileTimeoutRef.current);
       if (uploadTimeoutRef.current) clearTimeout(uploadTimeoutRef.current);
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [interpreterIntervalId]);
+  }, []);
+
+  // Global Keyboard Shortcuts for Simulation Interpolator
+  useEffect(() => {
+    const handleSimulationKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      const isTyping = activeEl && (
+        activeEl.tagName === "INPUT" ||
+        activeEl.tagName === "TEXTAREA" ||
+        activeEl.hasAttribute("contenteditable") ||
+        activeEl.classList.contains("cm-content") ||
+        activeEl.closest(".cm-editor") || 
+        activeEl.tagName === "SELECT"
+      );
+      if (isTyping) return;
+
+      const key = e.key.toLowerCase();
+
+      // Spacebar: Play/Pause/Resume simulation
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (simulationState.isCompiled) {
+          if (simulationState.status === "running") {
+            pauseSimulation();
+          } else {
+            resumeSimulation();
+          }
+        } else {
+          handleCompileAndRun();
+        }
+        return;
+      }
+
+      // Escape: Emergency Halt / Force Stop
+      if (e.key === "Escape") {
+        e.preventDefault();
+        stopSimulation();
+        if (setLogs) {
+          setLogs([
+            {
+              id: `force-stop-reset-shortcut-${Date.now()}`,
+              type: "error",
+              text: "[SYSTEM RESET] EMERGENCY HOTKEY TRIGGERED (Esc)! Joint interpolations suspended, PLC registers cleared.",
+              timestamp: new Date().toLocaleTimeString()
+            }
+          ]);
+        }
+        return;
+      }
+
+      // 's' key: Single step next instruction
+      if (key === "s" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        if (simulationState.status === "paused" || simulationState.status === "idle") {
+          e.preventDefault();
+          stepSimulationLine();
+        }
+        return;
+      }
+
+      // 'f8' key: Flash Program & Run / Compile & Upload
+      if (e.key === "F8") {
+        e.preventDefault();
+        handleCompileAndRun();
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleSimulationKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleSimulationKeyDown);
+    };
+  }, [simulationState, simulationSpeed, activeBoard, activeFileIndex, files]);
 
   // Conveyor horizontal belt offset flow animation
   useEffect(() => {
@@ -1020,91 +1186,135 @@ export default function RobotWorkspaceIDE({
         </div>
         
         {/* Play/Stop & Reference Triggers */}
-        <div className="flex items-center space-x-1.5 shrink-0 select-none">
+        <div className="flex items-center space-x-2 shrink-0 select-none">
           {/* Reference Modal button */}
           <button
             onClick={() => setShowHelpModal(true)}
-            className="px-2 py-0.5 bg-[#0d0d0f] hover:bg-[#121215] border border-white/5 hover:border-white/10 rounded font-mono text-[9px] text-slate-400 hover:text-white flex items-center space-x-1 cursor-pointer transition-all shrink-0"
+            className="h-8 px-2.5 bg-[#0d0d0f] hover:bg-[#1a1a24] border border-white/5 hover:border-white/10 rounded font-mono text-[9px] text-slate-300 hover:text-white flex items-center space-x-1 cursor-pointer transition-all shrink-0"
             title="Open G-Code Command Reference Guide"
           >
-            <HelpCircle className="w-3 h-3 text-blue-400" />
-            <span className="hidden lg:inline">Reference</span>
+            <HelpCircle className="w-3.5 h-3.5 text-blue-400" />
+            <span className="hidden lg:inline">Reference Manual</span>
           </button>
 
           {/* Simulation Speed Dropdown Selector */}
-          <div className="flex items-center space-x-1 bg-[#0d0d0f] border border-white/5 rounded px-1.5 py-0.5 select-none shrink-0">
-            <span className="text-[8px] font-mono font-bold text-slate-500 uppercase tracking-wide hidden lg:inline">Speed:</span>
+          <div className="flex items-center space-x-1 bg-[#0d0d0f] border border-white/5 rounded px-2 h-8 select-none shrink-0">
+            <span className="text-[8px] font-mono font-bold text-slate-400 uppercase tracking-wide hidden xl:inline">Speed:</span>
             <select
               value={simulationSpeed}
               onChange={(e) => setSimulationSpeed(Number(e.target.value))}
               disabled={simulationState.isRunning}
-              className="bg-transparent text-slate-300 font-mono text-[9px] focus:outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+              className="bg-[#0d0d0f] text-slate-200 font-mono text-[9px] focus:outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-55"
               title="Execution step speed interval"
             >
-              <option value="2000" className="bg-[#141417]">0.5x</option>
-              <option value="1500" className="bg-[#141417]">0.75x</option>
-              <option value="1000" className="bg-[#141417]">1.0x</option>
-              <option value="500" className="bg-[#141417]">2.0x</option>
-              <option value="250" className="bg-[#141417]">4.0x</option>
+              <option value="2000" className="bg-[#141417] text-slate-200">0.5x</option>
+              <option value="1500" className="bg-[#141417] text-slate-200">0.75x</option>
+              <option value="1000" className="bg-[#141417] text-slate-200">1.0x (Calibrated)</option>
+              <option value="500" className="bg-[#141417] text-slate-200">2.0x (Direct Direct)</option>
+              <option value="250" className="bg-[#141417] text-slate-200">4.0x (Turbo Execution)</option>
             </select>
           </div>
 
-          {/* Debugging Suite Panel */}
-          {simulationState.isCompiled && (
-            <div className="flex bg-[#0d0d0f] p-0.5 rounded border border-white/5 space-x-1 items-center animate-in fade-in zoom-in duration-200 shrink-0">
-              {/* PLAY / RESUME or PAUSE Button */}
-              {simulationState.status === "running" ? (
-                <button
-                  onClick={pauseSimulation}
-                  title="Pause GCODE sequence"
-                  className="p-1 hover:text-amber-400 text-amber-500/70 hover:bg-[#1a1a24] rounded cursor-pointer transition-colors"
-                >
-                  <Pause className="w-3 h-3 fill-current" />
-                </button>
-              ) : simulationState.status === "paused" ? (
-                <button
-                  onClick={resumeSimulation}
-                  title="Resume GCODE sequence"
-                  className="p-1 hover:text-emerald-400 text-emerald-500/70 hover:bg-[#1a1a24] rounded cursor-pointer transition-colors"
-                >
-                  <Play className="w-3 h-3 fill-current" />
-                </button>
-              ) : null}
-
-              {/* SINGLE STEP LINE Button */}
-              {(simulationState.status === "paused" || simulationState.status === "idle") && (
-                <button
-                  onClick={stepSimulationLine}
-                  title="Single Step (Next Instruction)"
-                  className="p-1 hover:text-sky-400 text-slate-400 hover:bg-[#1a1a24] rounded cursor-pointer transition-all flex items-center space-x-1"
-                >
-                  <ChevronRight className="w-3 h-3" />
-                  <span className="text-[7.5px] font-mono font-semibold tracking-wider hidden xl:inline pt-0.5 pr-0.5">STEP</span>
-                </button>
+          {/* UNIFIED INTERACTIVE SIMULATION CONTROL SUITE */}
+          <div className="flex bg-[#0b0b0d] border border-white/10 rounded-lg p-1 space-x-1 items-center shrink-0">
+            {/* 1. FLASH PROGRAM & RUN */}
+            <button
+              onClick={handleCompileAndRun}
+              title="Compile and Start G-Code Routine to Virtual PLC Core (Key: F8)"
+              className={`flex items-center justify-center space-x-1 px-3.5 py-1 h-8 min-w-[85px] sm:min-w-[95px] font-mono text-[8.5px] font-extrabold rounded cursor-pointer border transition-all duration-300 shadow-sm ${
+                (simulationState.isRunning || simulationState.status === "paused")
+                  ? "bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/25"
+                  : "bg-blue-600 hover:bg-blue-500 text-white border-blue-700 shadow"
+              }`}
+            >
+              {(simulationState.isRunning || simulationState.status === "paused") ? (
+                <>
+                  <Trash2 className="w-3 h-3 text-rose-400" />
+                  <span>STOP</span>
+                </>
+              ) : (
+                <>
+                  <Cpu className="w-3 h-3 text-blue-200 animate-pulse shrink-0" />
+                  <span>FLASH [F8]</span>
+                </>
               )}
-            </div>
-          )}
+            </button>
 
-          <button
-            onClick={handleCompileAndRun}
-            className={`flex items-center space-x-1 px-2.5 py-1 font-mono text-[9.5px] font-bold rounded cursor-pointer border transition-all duration-300 shrink-0 ${
-              (simulationState.isRunning || simulationState.status === "paused")
-                ? "bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/20"
-                : "bg-blue-600 hover:bg-blue-500 text-white border-blue-700 shadow-lg"
-            }`}
-          >
-            {(simulationState.isRunning || simulationState.status === "paused") ? (
-              <>
-                <Trash2 className="w-3 h-3" />
-                <span>STOP</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3 h-3" />
-                <span>FLASH</span>
-              </>
-            )}
-          </button>
+            {/* 2. PLAY / PAUSE / RESUME */}
+            <button
+              onClick={() => {
+                if (!simulationState.isCompiled) {
+                  handleCompileAndRun();
+                } else if (simulationState.status === "running") {
+                  pauseSimulation();
+                } else {
+                  resumeSimulation();
+                }
+              }}
+              title="Pause or Resume execution sequence (Key: Spacebar)"
+              className={`flex items-center justify-center space-x-1 px-3 py-1 h-8 min-w-[75px] sm:min-w-[85px] font-mono text-[8.5px] font-extrabold rounded cursor-pointer border transition-all duration-300 shadow-sm ${
+                !simulationState.isCompiled 
+                  ? "bg-[#18181b]/50 text-slate-500 border-white/5 hover:bg-[#18181b]/80 hover:text-slate-350"
+                  : simulationState.status === "running"
+                  ? "bg-amber-600/10 text-amber-400 border-amber-600/30 hover:bg-amber-600/20"
+                  : "bg-emerald-600/10 text-emerald-400 border-emerald-600/30 hover:bg-emerald-600/20"
+              }`}
+            >
+              {!simulationState.isCompiled ? (
+                <>
+                  <Play className="w-3 h-3 text-slate-500 shrink-0" />
+                  <span>RUN [SP]</span>
+                </>
+              ) : simulationState.status === "running" ? (
+                <>
+                  <Pause className="w-3 h-3 text-amber-400 fill-current shrink-0" />
+                  <span>PAUSE</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3 h-3 text-emerald-400 fill-current shrink-0" />
+                  <span>RESUME</span>
+                </>
+              )}
+            </button>
+
+            {/* 3. STEP NEXT INSTRUCTION */}
+            <button
+              onClick={stepSimulationLine}
+              disabled={!simulationState.isCompiled || (simulationState.status !== "paused" && simulationState.status !== "idle")}
+              title="Advantage step to the next line of instruction (Key: S)"
+              className={`flex items-center justify-center space-x-1 px-2.5 py-1 h-8 min-w-[65px] sm:min-w-[75px] font-mono text-[8.5px] font-extrabold rounded border transition-all duration-300 shadow-sm disabled:cursor-not-allowed disabled:opacity-25 ${
+                simulationState.isCompiled && (simulationState.status === "paused" || simulationState.status === "idle")
+                  ? "bg-sky-600/10 text-sky-400 border-sky-500/25 hover:bg-sky-600/20"
+                  : "bg-[#141417]/80 text-slate-600 border-white/5"
+              }`}
+            >
+              <ChevronRight className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+              <span>STEP [S]</span>
+            </button>
+
+            {/* 4. EMERGENCY FORCE STOP */}
+            <button
+              onClick={() => {
+                stopSimulation();
+                if (setLogs) {
+                  setLogs([
+                    {
+                      id: "force-stop-reset",
+                      type: "error",
+                      text: "[SYSTEM RESET] EMERGENCY HARDWARE KILL TRIGGERED! All joint interpolations suspended, pneumatic vacuum system discharged, PLC registers cleared.",
+                      timestamp: new Date().toLocaleTimeString()
+                    }
+                  ]);
+                }
+              }}
+              title="Immediate Hardware Emergency Kill (Key: Esc)"
+              className="flex items-center justify-center space-x-1 px-3 py-1 h-8 font-mono text-[8.5px] font-black rounded cursor-pointer border border-[#f43f5e] bg-red-950/40 text-outline-rose hover:bg-rose-700 hover:text-white transition-all duration-300 shadow animate-pulse hover:animate-none"
+            >
+              <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+              <span>FORCE STOP [ESC]</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1113,7 +1323,10 @@ export default function RobotWorkspaceIDE({
         
         {/* Workspace Explorer column (Left sidebar) - Collapsible */}
         {sidebarOpen && (
-          <div className="w-full md:w-48 bg-[#141417] p-2.5 border-r border-[#1e1e23] flex flex-col overflow-y-auto shrink-0 animate-in slide-in-from-left duration-150">
+          <div 
+            style={{ width: `${explorerWidth}px` }} 
+            className="w-full bg-[#141417] p-2.5 border-r border-[#1e1e23] flex flex-col overflow-y-auto shrink-0 animate-in slide-in-from-left duration-150"
+          >
             <div className="flex items-center justify-between text-[9px] font-mono text-slate-500 font-bold tracking-wider uppercase mb-2 pb-1 border-b border-[#1e1e23] select-none">
               <span>Explorer</span>
               <button
@@ -1193,6 +1406,17 @@ export default function RobotWorkspaceIDE({
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Dynamic vertical resizer handle for explorer */}
+        {sidebarOpen && (
+          <div
+            onMouseDown={startResizeExplorer}
+            className="hidden md:block w-1 hover:w-1.5 bg-transparent hover:bg-blue-600/30 border-r border-[#1e1e23] cursor-col-resize shrink-0 transition-all relative group z-10"
+            title="Drag to resize file explorer sidebar"
+          >
+            <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 bg-white/5 group-hover:bg-blue-500/50 transition-colors pointer-events-none" />
           </div>
         )}
 
@@ -1330,41 +1554,82 @@ export default function RobotWorkspaceIDE({
       </div>
 
       {/* Compiler logs Console & Output (Bottom bar) */}
-      <div className="h-40 bg-[#141417] border-t border-white/5 flex flex-col shrink-0">
-        <div className="flex items-center justify-between px-3.5 py-1.5 bg-[#141417] border-b border-white/5">
-          <div className="flex items-center space-x-2 text-[10px] font-mono text-slate-500 font-bold uppercase tracking-wider">
-            <Terminal className="w-3.5 h-3.5 text-slate-500" />
-            <span>Serial Flash Terminal Output</span>
-          </div>
-          <button
-            onClick={() => setLogs([])}
-            className="text-[9px] font-mono text-slate-600 hover:text-slate-300 uppercase transition-colors"
+      <div 
+        style={{ height: isTerminalCollapsed ? "32px" : `${terminalHeight}px` }} 
+        className="bg-[#141417] border-t border-white/5 flex flex-col shrink-0 relative transition-transform duration-200"
+      >
+        {/* Dynamic horizontal resizer handle for terminal */}
+        {!isTerminalCollapsed && (
+          <div
+            onMouseDown={startResizeTerminal}
+            className="h-1 hover:h-1.5 bg-transparent hover:bg-blue-600/30 cursor-row-resize absolute -top-[2px] left-0 right-0 z-10 transition-all group"
+            title="Drag to resize console logs terminal"
           >
-            Clear
-          </button>
+            <div className="h-0.5 w-full bg-white/5 group-hover:bg-blue-500/50 transition-colors pointer-events-none" />
+          </div>
+        )}
+        <div className="flex items-center justify-between px-3.5 py-1.5 bg-[#141417] border-b border-white/5 select-none">
+          <div className="flex items-center space-x-2 text-[10px] font-mono text-slate-500 font-bold uppercase tracking-wider">
+            <Terminal className="w-3.5 h-3.5 text-slate-500 animate-pulse" />
+            <span>Serial Flash Terminal Output</span>
+            {isTerminalCollapsed && (
+              <span className="text-[8.5px] text-slate-600 font-normal lowercase normal-case">
+                ({logs.length} signals minimized)
+              </span>
+            )}
+          </div>
+          <div className="flex items-center space-x-3.5">
+            {!isTerminalCollapsed && (
+              <button
+                onClick={() => setLogs([])}
+                className="text-[9px] font-mono text-slate-600 hover:text-slate-300 uppercase transition-colors"
+              >
+                Clear
+              </button>
+            )}
+            <button
+              onClick={() => setIsTerminalCollapsed(!isTerminalCollapsed)}
+              className="text-[9px] font-mono text-slate-400 hover:text-white uppercase transition-colors flex items-center space-x-1"
+              title={isTerminalCollapsed ? "Expand Terminal Logs" : "Collapse Terminal Logs"}
+            >
+              {isTerminalCollapsed ? (
+                <>
+                  <span>Expand</span>
+                  <ChevronUp className="w-3.5 h-3.5" />
+                </>
+              ) : (
+                <>
+                  <span>Retract</span>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </>
+              )}
+            </button>
+          </div>
         </div>
         
         {/* Terminal logs listing */}
-        <div className="flex-1 overflow-y-auto p-3 font-mono text-[10px] lg:text-[11px] space-y-1 leading-snug select-text">
-          {logs.length === 0 ? (
-            <div className="text-slate-600 italic">No console telemetry signals. Compile or flash code to begin parsing...</div>
-          ) : (
-            logs.map((log) => (
-              <div key={log.id} className="flex items-start space-x-2">
-                <span className="text-slate-600 flex-shrink-0 select-none">[{log.timestamp}]</span>
-                <span className={`flex-1 ${
-                  log.type === "success" ? "text-[#22c55e] font-semibold" :
-                  log.type === "warn" ? "text-amber-400" :
-                  log.type === "error" ? "text-rose-400 font-bold" :
-                  "text-slate-350"
-                }`}>
-                  {log.text}
-                </span>
-              </div>
-            ))
-          )}
-          <div ref={terminalBottomRef} />
-        </div>
+        {!isTerminalCollapsed && (
+          <div className="flex-1 overflow-y-auto p-3 font-mono text-[10px] lg:text-[11px] space-y-1 leading-snug select-text">
+            {logs.length === 0 ? (
+              <div className="text-slate-600 italic">No console telemetry signals. Compile or flash code to begin parsing...</div>
+            ) : (
+              logs.map((log) => (
+                <div key={log.id} className="flex items-start space-x-2">
+                  <span className="text-slate-600 flex-shrink-0 select-none">[{log.timestamp}]</span>
+                  <span className={`flex-1 ${
+                    log.type === "success" ? "text-[#22c55e] font-semibold" :
+                    log.type === "warn" ? "text-amber-400" :
+                    log.type === "error" ? "text-rose-400 font-bold" :
+                    "text-slate-350"
+                  }`}>
+                    {log.text}
+                  </span>
+                </div>
+              ))
+            )}
+            <div ref={terminalBottomRef} />
+          </div>
+        )}
       </div>
 
       {/* 5. Centered Modal Dialogs */}
@@ -1420,84 +1685,129 @@ export default function RobotWorkspaceIDE({
       <ResizableModal
         isOpen={showHelpModal}
         onClose={() => setShowHelpModal(false)}
-        title="Industrial 5-DOF CIM Controller Manual"
-        icon={<HelpCircle className="w-4 h-4 text-blue-500" />}
-        defaultWidth={700}
-        defaultHeight={540}
-        minWidth={360}
-        minHeight={320}
+        title="VoltLogic Pro - Industrial CIM Engineering Manual"
+        icon={<HelpCircle className="w-4 h-4 text-blue-400" />}
+        defaultWidth={760}
+        defaultHeight={580}
+        minWidth={400}
+        minHeight={340}
       >
-        <div className="space-y-4 text-xs leading-relaxed font-mono text-slate-300">
+        <div className="space-y-4 text-xs leading-relaxed font-mono text-slate-350 pr-1 max-h-[480px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10">
+          
+          {/* Section 1: Decoupled Cognitive Architecture */}
           <div className="space-y-1 bg-[#0d0d0f] border border-white/5 p-3 rounded">
-            <div className="text-blue-400 font-bold text-[10px] uppercase tracking-wider">System Kinematics & Coordinate Mappings</div>
+            <div className="text-blue-400 font-bold text-[10px] uppercase tracking-wider">1. Decoupled 3-Layer Cognitive Architecture</div>
             <p className="text-slate-400 text-[11px] leading-relaxed">
-              The CIM Robotic Arm operates using 5 degrees of freedom: <span className="text-slate-200 font-semibold">X, Y, Z</span> represent the Cartesian Tool Center Point (TCP). 
-              <span className="text-slate-200 font-semibold">A</span> controls the industrial wrist pitch angle (-120° to 120°), while 
-              <span className="text-slate-200 font-semibold">B</span> dictates the absolute waist/base rotation (-180° to 180°).
+              To guarantee consistent latency and jitter-free motion paths, the controller firmware decouples execution into three sequential, non-blocking layers:
             </p>
+            <ul className="list-disc pl-4 space-y-1 text-slate-400 text-[10.5px] mt-1.5">
+              <li><span className="text-slate-205 font-bold">Sensing Layer:</span> Constantly queries breakbeam sensors, encoder registers (<code className="text-teal-400">#122</code>-<code className="text-teal-400">#151</code>), and color scans.</li>
+              <li><span className="text-slate-205 font-bold">Decision Layer:</span> Matches parts to destination bins, processes error states, and updates state vectors.</li>
+              <li><span className="text-slate-205 font-bold">Motion Profiler:</span> Translates goals into step pulses using kinematics solvers, maintaining smooth paths.</li>
+            </ul>
           </div>
 
-          <div>
-            <div className="text-emerald-400 font-bold border-b border-white/5 pb-1 mb-2 uppercase text-[10px] tracking-wider">Standard G-Codes Guide</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-              <div className="space-y-2">
-                <div>
-                  <code className="text-blue-400 font-bold">G00 [Coords]</code>
-                  <p className="text-slate-400">Rapid travel path placement. Moves links concurrently at max frequency. E.g. <code className="text-slate-200 font-semibold">G00 X150 Y150 Z250</code></p>
-                </div>
-                <div>
-                  <code className="text-blue-400 font-bold">G01 [Coords] F[speed]</code>
-                  <p className="text-slate-400">Precision linear interpolation with custom Feedrate control. E.g. <code className="text-slate-200 font-semibold">G01 X150 Y20 Z10 F1200</code></p>
-                </div>
+          {/* Section 2: Kinematic Classes */}
+          <div className="space-y-1 bg-[#0d0d0f] border border-white/5 p-3 rounded">
+            <div className="text-emerald-400 font-bold text-[10px] uppercase tracking-wider">2. System Kinematics & Coordinate Planes</div>
+            <p className="text-slate-400 text-[11px] leading-relaxed">
+              The controller compiles high-level coordinates into actuator joint-space configuration targets depending on the selected hardware class:
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2">
+              <div className="bg-black/35 p-2 rounded border border-white/5">
+                <span className="text-slate-200 font-bold text-[9.5px]">Articulated 4-DOF:</span>
+                <p className="text-slate-500 text-[9px] mt-1">Multi-planar revolute joints. Translates spherical coordinates into J1/J2/J3 absolute angles.</p>
               </div>
-              <div className="space-y-2">
-                <div>
-                  <code className="text-blue-400 font-bold">G90</code>
-                  <p className="text-slate-400 cursor-text">Activates absolute programming coordinate mode (standard default).</p>
-                </div>
-                <div>
-                  <code className="text-blue-400 font-bold">G21</code>
-                  <p className="text-slate-400 cursor-text">Activates metric dimensions system. Arm metrics are computed in millimeters.</p>
-                </div>
+              <div className="bg-black/35 p-2 rounded border border-white/5">
+                <span className="text-slate-200 font-bold text-[9.5px]">Planar SCARA:</span>
+                <p className="text-slate-500 text-[9px] mt-1">High-response horizontal pick. Revolute J1/J2 sweep on parallel planes with a linear J3 quill plunger.</p>
+              </div>
+              <div className="bg-black/35 p-2 rounded border border-white/5">
+                <span className="text-slate-200 font-bold text-[9.5px]">Cartesian Gantry:</span>
+                <p className="text-slate-500 text-[9px] mt-1">Overhead linear rails. Orthogonal X/Y axis sliders matched with a vertical physical quill.</p>
               </div>
             </div>
           </div>
 
+          {/* Section 3: Calibration Registers */}
+          <div className="space-y-1 bg-[#0d0d0f] border border-white/5 p-3 rounded">
+            <div className="text-amber-400 font-bold text-[10px] uppercase tracking-wider">3. Teach Calibration & Volatile Parameter Registers</div>
+            <p className="text-slate-400 text-[11px] leading-relaxed">
+              Robot target landing coordinates and safety heights are soft-referenced to volatile macro variables. Change these via active UI Sliders under the 
+              <span className="text-white"> "Factory Simulator"</span> tab or programmatically in scripts without rewriting kinematics logic:
+            </p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 bg-black/45 p-2 rounded mt-2 text-[9.5px] font-mono leading-relaxed border border-white/5">
+              <div><span className="text-amber-400">#122 / #123</span>: Conveyor Pick Pt (X/Y)</div>
+              <div><span className="text-amber-400">#130 / #131</span>: Red Sort Box Target</div>
+              <div><span className="text-amber-400">#132 / #133</span>: Green Sort Box Target</div>
+              <div><span className="text-amber-400">#134 / #135</span>: Blue Sort Box Target</div>
+              <div><span className="text-amber-400">#136 / #137</span>: Yellow Sort Box Target</div>
+              <div><span className="text-amber-400">#150 / #151</span>: Reject / Fault Storage Slot</div>
+              <div><span className="text-amber-400">#105</span>: Transition Safe Height (Z)</div>
+              <div><span className="text-amber-400">#107</span>: Drop-Off Landing Alt (Z)</div>
+            </div>
+          </div>
+
+          {/* Section 4: Motion Profiling */}
+          <div className="space-y-1 bg-[#0d0d0f] border border-white/5 p-3 rounded">
+            <div className="text-teal-400 font-bold text-[10px] uppercase tracking-wider">4. Motion Profiling & Acceleration Control</div>
+            <p className="text-slate-400 text-[11px] leading-relaxed">
+              Actuators do not perform instantaneous step jumps. Paths are computed using a motion profile:
+            </p>
+            <ul className="list-disc pl-4 space-y-1 text-slate-400 text-[10px] mt-1">
+              <li><span className="text-slate-205 font-bold">Inter-Joint Interpolation:</span> Damped step movements are solved dynamically via real-time damping coefficients inside the workspace physics solver.</li>
+              <li><span className="text-slate-205 font-bold">Feedrate Limits:</span> The G-code parameter <code className="text-teal-400 font-bold">F[value]</code> defines peak speeds; deceleration curves are generated as targets near extreme limits.</li>
+            </ul>
+          </div>
+
+          {/* Section 5: Interlocking & Safeties */}
+          <div className="space-y-1 bg-[#0d0d0f] border border-white/5 p-3 rounded">
+            <div className="text-rose-400 font-bold text-[10px] uppercase tracking-wider">5. System Safeties & Interlocking</div>
+            <p className="text-slate-400 text-[11px] leading-relaxed">
+              Industrial cells are guided by interlocking triggers to prevent physical collisions:
+            </p>
+            <ul className="list-disc pl-4 space-y-1 text-slate-400 text-[10px] mt-1">
+              <li><span className="text-slate-210 font-bold">Dry-Run Simulation:</span> Activating dry-run disables vacuum/gripper actuators, running virtual motions so coordinates and collisions can be detected safely.</li>
+              <li><span className="text-slate-210 font-bold">Breakbeam Interlock (<code className="text-teal-450 uppercase">M66</code>):</span> Halts routine progression until a physical part registers, avoiding empty pickups.</li>
+              <li><span className="text-slate-210 font-bold">Containment Safety Barrier:</span> Setting the obstacle height maps a physical intrusion boundary. Paths must climb over <code className="text-teal-400">#105</code> to clear the hazard.</li>
+            </ul>
+          </div>
+
+          {/* Section 6: Syntax Guide */}
           <div>
-            <div className="text-amber-400 font-bold border-b border-white/5 pb-1 mb-2 uppercase text-[10px] tracking-wider">Actuator M-Codes Guide</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-              <div className="space-y-2">
+            <div className="text-blue-400 font-bold border-b border-white/5 pb-1 mb-2 uppercase text-[10px] tracking-wider">6. Controller Instruction Cheat Sheet</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px] leading-normal">
+              <div className="space-y-1.5 bg-black/20 p-2 rounded border border-white/5">
+                <div className="text-slate-200 font-bold text-[9px] uppercase tracking-wider">Standard G-Codes</div>
+                <div>
+                  <code className="text-emerald-400 font-bold">G00 X.. Y.. Z..</code>
+                  <p className="text-slate-400 text-[9.5px]">Rapid move at max rate.</p>
+                </div>
+                <div>
+                  <code className="text-emerald-400 font-bold">G01 X.. Y.. Z.. F[rate]</code>
+                  <p className="text-slate-400 text-[9.5px]">Linear feedrate coordinated motion.</p>
+                </div>
+                <div>
+                  <code className="text-emerald-400 font-bold">G90 / G21</code>
+                  <p className="text-slate-400 text-[9.5px]">Absolute coordinate mode / Metric units (mm).</p>
+                </div>
+              </div>
+              
+              <div className="space-y-1.5 bg-black/20 p-2 rounded border border-white/5">
+                <div className="text-slate-200 font-bold text-[9px] uppercase tracking-wider">Standard M-Codes</div>
                 <div>
                   <code className="text-blue-400 font-bold">M03 S1 / S0</code>
-                  <p className="text-slate-400">Toggles the horizontal digital assembly line. <code className="text-slate-200 font-semibold">S1</code> starts the conveyor belt; <code className="text-slate-200 font-semibold">S0</code> halts it.</p>
+                  <p className="text-slate-400 text-[9.5px]">Conveyor Belt Run / Halt.</p>
+                </div>
+                <div>
+                  <code className="text-blue-400 font-bold">M05 P1 / P0</code>
+                  <p className="text-slate-400 text-[9.5px]">Actuator Tool Grab / Release.</p>
                 </div>
                 <div>
                   <code className="text-blue-400 font-bold">M66 P1 L3 Q5</code>
-                  <p className="text-slate-400">Interlock breaker. Pauses sequence block until breakbeam scanner registers an approaching workpiece.</p>
+                  <p className="text-slate-400 text-[9.5px]">Sensor breakpoint sync interlock hook.</p>
                 </div>
               </div>
-              <div className="space-y-2">
-                <div>
-                  <code className="text-blue-400 font-bold">M05 P1 / P0</code>
-                  <p className="text-slate-400 cursor-text">Pneumatic vacuum suction control. <code className="text-slate-200 font-semibold">P1</code> actuates suction to grab targets; <code className="text-slate-200 font-semibold">P0</code> releases/vents it.</p>
-                </div>
-                <div>
-                  <code className="text-blue-400 font-bold">M09</code>
-                  <p className="text-slate-400 cursor-text">Flashes safety strobe signaling block completion.</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="border-t border-white/5 pt-3">
-            <div className="text-teal-400 font-bold uppercase text-[10px] tracking-wider mb-2">Advanced Macro Blocks</div>
-            <p className="text-slate-400 text-[11px] leading-relaxed mb-2">
-              To establish endless automation workflows, structure pick-and-place codes within repeat sub-loops:
-            </p>
-            <div className="bg-black/50 p-2.5 rounded font-mono text-[10px] text-emerald-400 border border-white/5">
-              O100 REPEAT [9999]<br />
-              &nbsp;&nbsp;; sequential pick/place tasks here<br />
-              O100 ENDREPEAT
             </div>
           </div>
 
@@ -1506,7 +1816,7 @@ export default function RobotWorkspaceIDE({
               onClick={() => setShowHelpModal(false)}
               className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white font-bold transition-colors cursor-pointer"
             >
-              Close Reference
+              Understand & Close
             </button>
           </div>
         </div>

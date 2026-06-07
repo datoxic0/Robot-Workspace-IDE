@@ -65,6 +65,8 @@ export interface SimulationState {
   hasBlock: boolean;
   status: "idle" | "compiling" | "uploading" | "connecting" | "running" | "error" | "paused";
   simulationSpeed: number; // Multiplier, default 1
+  dryRunMode?: boolean;
+  profilingEnabled?: boolean;
 }
 
 export interface TerminalLog {
