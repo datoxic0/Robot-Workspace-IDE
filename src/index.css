@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-slate-150: #eef2f6;
+  --color-slate-205: #e2e8f0;
+  --color-slate-250: #cbd5e1;
+  --color-slate-350: #94a3b8;
+  --color-slate-450: #64748b;
+  --color-slate-505: #4b5563;
+  --color-slate-550: #374151;
+}
+
 /* VoltLogic Advanced Dynamic Contrast Outline Typography System */
 .text-outline-dual {
   color: #ffffff !important;

@@ -5,7 +5,8 @@ import {
   Settings, Activity, BookOpen, Compass, Sliders, ChevronDown, 
   ChevronUp, BarChart2, RefreshCw, ChevronRight, HelpCircle, 
   ArrowUpRight, Info, CheckCircle2, ShieldAlert, Zap,
-  Search, Award, Check, Play, Edit, Calculator, Wrench
+  Search, Award, Check, Play, Edit, Calculator, Wrench,
+  Maximize2, Minimize2
 } from "lucide-react";
 import { 
   BoardConfig, 
@@ -365,6 +366,7 @@ export default function RightControlPanel({
 }: RightControlPanelProps) {
   // Navigation internal tabs state
   const [activeTab, setActiveTab] = useState<"copilot" | "pendant" | "calibration" | "diagnostics" | "reference">("copilot");
+  const [isManualMaximized, setIsManualMaximized] = useState(false);
   const [currentRefPart, setCurrentRefPart] = useState<string>("ALL");
   const [refSearchQuery, setRefSearchQuery] = useState("");
   const [refSubTab, setRefSubTab] = useState<"book" | "sandbox" | "quiz">("book");
@@ -375,6 +377,9 @@ export default function RightControlPanel({
   const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [quizShowHint, setQuizShowHint] = useState<Record<number, boolean>>({});
+
+  const jointsAnglesKey = joints.map((j) => `${j.id}:${j.angle}:${j.length}`).join(",");
+  const robotDesignKey = `${robotDesign.shoulderLength}:${robotDesign.elbowLength}:${robotDesign.wristLength}:${robotDesign.endEffectorType}:${robotDesign.payloadWeight}`;
 
   // Hand-Written Code Exercises States
   const [codeAnswers, setCodeAnswers] = useState<string[]>(["", "", ""]);
@@ -780,7 +785,7 @@ export default function RightControlPanel({
     return () => {
       window.removeEventListener("keydown", handleJogKeyDown);
     };
-  }, [jogMode, jogStepSize, activeTab, joints, robotDesign]);
+  }, [jogMode, jogStepSize, activeTab, jointsAnglesKey, robotDesignKey]);
 
   const getCommandPreview = () => {
     const fileLang = activeFile?.language || "gcode";
@@ -935,10 +940,13 @@ export default function RightControlPanel({
     prevJointsRef.current = joints;
 
     setVelocityHistory((prev) => {
+      if (delta === 0 && prev[prev.length - 1] === 0) {
+        return prev;
+      }
       const next = [...prev.slice(1), delta];
       return next;
     });
-  }, [joints]);
+  }, [jointsAnglesKey]);
 
   const jointTorques = joints.map((j, idx) => {
     const baseTorque = idx === 0 ? 3.5 : idx === 1 ? 6.8 : idx === 2 ? 4.2 : 1.5;
@@ -1878,17 +1886,40 @@ def calculate_ramp(distance, feedrate):
         {/* === TAB E: EXPANDED REFERENCE HUB === */}
         {/* ==================================== */}
         {activeTab === "reference" && (
-          <div className="space-y-4 font-mono select-none">
+          <div className={isManualMaximized 
+            ? "fixed inset-0 bg-[#0c0c0f] text-slate-100 z-[110] p-6 md:p-8 overflow-y-auto font-mono select-none flex flex-col space-y-4 animate-in fade-in duration-200" 
+            : "space-y-4 font-mono select-none"
+          }>
             
             {/* Title Block */}
-            <div className="border-b border-white/5 pb-2">
-              <h3 className="text-[12.5px] font-extrabold text-slate-150 uppercase tracking-widest flex items-center gap-1.5">
-                <BookOpen className="w-4 h-4 text-indigo-400 animate-pulse" />
-                <span>VoltLogic PRO Dynamic Companion Academy</span>
-              </h3>
-              <p className="text-[8px] text-slate-500 uppercase tracking-wider mt-0.5 leading-normal">
-                Professional interactive robot cell manual, live kinematics calculators, &amp; knowledge audits.
-              </p>
+            <div className="border-b border-white/5 pb-2.5 flex items-start justify-between gap-3 shrink-0">
+              <div>
+                <h3 className="text-[12.5px] font-extrabold text-slate-100 uppercase tracking-widest flex items-center gap-1.5">
+                  <BookOpen className="w-4 h-4 text-indigo-400 animate-pulse" />
+                  <span>VoltLogic PRO Dynamic Companion Academy{isManualMaximized && " (Maximized)"}</span>
+                </h3>
+                <p className="text-[8px] text-slate-400 uppercase tracking-wider mt-0.5 leading-normal">
+                  Professional interactive robot cell manual, live kinematics calculators, &amp; knowledge audits.
+                </p>
+              </div>
+              <button
+                onClick={() => setIsManualMaximized(!isManualMaximized)}
+                className="px-2 py-1.5 text-[8.5px] font-bold text-slate-300 hover:text-indigo-300 hover:bg-indigo-600/15 border border-white/5 hover:border-indigo-500/20 rounded cursor-pointer transition-all shrink-0 flex items-center gap-1.5 uppercase"
+                title={isManualMaximized ? "Restore Normal Pane" : "Maximize Manual View"}
+                id="toggle-ref-maximize-btn"
+              >
+                {isManualMaximized ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                    <span>Minimize View</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    <span>Maximize View</span>
+                  </>
+                )}
+              </button>
             </div>
 
             {/* NESTED SUB-TABS SELECTOR */}

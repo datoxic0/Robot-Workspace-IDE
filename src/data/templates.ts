@@ -93,216 +93,94 @@ export const DEFAULT_FILES: Record<string, WorkspaceFile[]> = {
     {
       name: "cim_assembly.gcode",
       language: "gcode",
-      content: `G90
-G21
-G18
-G92 X0 Y0 Z120 A0 B0
+      content: `(=======================)
+( CIM 36-PIECE SORTER   )
+(=======================)
 
-#100 = 1800
-#101 = 500
-#102 = 125
-#103 = 85
-#104 = 40
-#105 = 115
-#106 = 170
-#107 = 55
-#108 = 200
-#109 = 450
-#110 = 12
-#111 = 18
-#112 = 220
+G90 ; Set absolute positioning
+G21 ; Set metric unit format
+G18 ; ZX plane selection
+G92 X0 Y0 Z120 A0 B0 ; Preset origin coordinates
 
-#120 = -262.5
+#100 = 1200 ; Rapid travel speed mm/min
+#101 = 450  ; Plunge feedrate speed mm/min
+
+#120 = -385 ; Pick station center line
 #121 = 140
-#122 = -250
-#123 = 140
 
-#130 = 80
-#131 = 180
-#132 = 110
-#133 = 180
-#134 = 140
-#135 = 180
-#136 = 170
-#137 = 180
-#138 = 200
-#139 = 180
-#140 = 230
-#141 = 180
-#142 = 260
-#143 = 180
-#144 = 290
-#145 = 180
-#146 = 320
-#147 = 180
-#148 = 350
-#149 = 180
-#150 = 380
-#151 = 180
+O100 REPEAT [36]
 
-O100 REPEAT [9999]
+( ========================= )
+( CYCLE INITIATION: SECTOR  )
+( ========================= )
 
-M05 P0
-M09
-M03 S1
+G01 X0 Z120 A0 B0 F[#100]
+M03 S1 ; Start conveyor motor
+M66 P1 L3 Q10 ; Interlock: poll input to go HIGH (wait for sensor)
+M03 S0 ; Halt conveyor motor on trigger
 
-G01 X0 Y0 Z[#102] A0 B0 F[#100]
-G04 P200
-G01 X[#122] Y[#123] Z[#102] A0 B0 F[#100]
-G04 P200
+( ========================= )
+( STAGED KINEMATICS PICKUP  )
+( ========================= )
 
-M66 P1 L3 Q10
-M03 S0
+G01 X-320 Z80 F800 ; Staged approach above workpiece
+G01 X-360 Z40 F600 ; Intermediate descent slide
+G01 X-385 Z-60 F400 ; Final pickup dive
 
-G01 X[#122] Y[#123] Z[#103] A0 B0 F[#101]
-M08
-G04 P[#108]
+M05 P1 ; Engage vacuum suction cup solenoid
+G04 P400 ; Dwell for pressure stabilization
 
-#200 = AI1
-#201 = AI2
-#202 = AI3
-#203 = AI4
+G01 X-360 Z20 F600 ; Safe post-pick staged lift
+G01 X-300 Z80 F900 ; Retrieve arm back to travel height
 
-M09
+( ========================= )
+( REAL-TIME COLOR SENSING   )
+( ========================= )
 
-IF [#203 <= 0] GOTO O190
+#200 = AI1 ; Read Port 1 Red Sensor intensity
+#201 = AI2 ; Read Port 2 Green Sensor intensity
+#202 = AI3 ; Read Port 3 Blue Sensor intensity
 
-#210 = 99
-#220 = #150
-#221 = #151
+#104 = 315 ; Fallback default: REJECT BIN (X315)
 
-IF [[#200 < #111] AND [#201 < #111] AND [#202 < #111]] GOTO O308
-IF [[#200 > #112] AND [#201 > #112] AND [#202 > #112]] GOTO O307
-IF [[#200 > [#201 + #110]] AND [#200 > [#202 + #110]]] GOTO O301
-IF [[#201 > [#200 + #110]] AND [#201 > [#202 + #110]]] GOTO O302
-IF [[#202 > [#200 + #110]] AND [[#202 > [#201 + #110]]] GOTO O303
-IF [[#200 > #110] AND [#201 > #110] AND [#202 < [#200 - #110]] AND [#202 < [#201 - #110]]] GOTO O304
-IF [[#201 > #110] AND [#202 > #110] AND [#200 < [#201 - #110]] AND [#200 < [#202 - #110]]] GOTO O305
-IF [[#200 > #110] AND [#202 > #110] AND [#201 < [#200 - #110]] AND [#201 < [#202 - #110]]] GOTO O306
-IF [[#200 > [#201 + 20]] AND [#201 > [#202 + 10]] AND [#202 < [#200 - #110]]] GOTO O309
-IF [[#200 > [#201 + 10]] AND [#202 > [#201 + 10]] AND [#201 < [#200 - #110]] AND [#201 < [#202 - #110]]] GOTO O310
-GOTO O399
+IF [#200 > 150] GOTO O301 ; RED workpiece detected
+IF [#201 > 150] GOTO O302 ; GREEN workpiece detected
+IF [#202 > 150] GOTO O303 ; BLUE workpiece detected
+GOTO O304
 
 O301
-#210 = 1
-GOTO O400
+#104 = 255 ; Center coordinates RED bin (X255)
+GOTO O304
+
 O302
-#210 = 2
-GOTO O400
+#104 = 195 ; Center coordinates GREEN bin (X195)
+GOTO O304
+
 O303
-#210 = 3
-GOTO O400
+#104 = 135 ; Center coordinates BLUE bin (X135)
+
 O304
-#210 = 4
-GOTO O400
-O305
-#210 = 5
-GOTO O400
-O306
-#210 = 6
-GOTO O400
-O307
-#210 = 7
-GOTO O400
-O308
-#210 = 8
-GOTO O400
-O309
-#210 = 9
-GOTO O400
-O310
-#210 = 10
-GOTO O400
-O399
-#210 = 99
-GOTO O400
+( ========================= )
+( DISPATCH TO CO-ORDINATE   )
+( ========================= )
 
-O400
-IF [#210 = 1] GOTO O410
-IF [#210 = 2] GOTO O420
-IF [#210 = 3] GOTO O430
-IF [#210 = 4] GOTO O440
-IF [#210 = 5] GOTO O450
-IF [#210 = 6] GOTO O460
-IF [#210 = 7] GOTO O470
-IF [#210 = 8] GOTO O480
-IF [#210 = 9] GOTO O490
-IF [#210 = 10] GOTO O500
-GOTO O600
+G01 X[#104] Z80 A0 B45 F900 ; Rapid sweep to target bin
+G01 X[#104] Z20 A-60 B180 F500 ; Direct align slide
+G01 X[#104] Z-50 A-85 B180 F400 ; Final deposit plunge slide
 
-O410
-#220 = #130
-#221 = #131
-GOTO O600
-O420
-#220 = #132
-#221 = #133
-GOTO O600
-O430
-#220 = #134
-#221 = #135
-GOTO O600
-O440
-#220 = #136
-#221 = #137
-GOTO O600
-O450
-#220 = #138
-#221 = #139
-GOTO O600
-O460
-#220 = #140
-#221 = #141
-GOTO O600
-O470
-#220 = #142
-#221 = #143
-GOTO O600
-O480
-#220 = #144
-#221 = #145
-GOTO O600
-O490
-#220 = #146
-#221 = #147
-GOTO O600
-O500
-#220 = #148
-#221 = #149
-GOTO O600
+M05 P0 ; De-energize vacuum suction cup solenoid
+G04 P350 ; Dwell to release vacuum pressure
 
-O600
-G01 X[#120] Y[#121] Z[#105] A0 B0 F[#100]
-G04 P150
-G01 Z[#104] F[#101]
-G04 P150
-M05 P1
-G04 P[#109]
-G01 Z[#105] F[#101]
-G04 P150
+( ========================= )
+( ARM RETRACTION SEQUENCE   )
+( ========================= )
 
-G01 X[#220] Y[#221] Z[#106] A0 B20 F[#100]
-G04 P150
-G01 Z[#107] F[#101]
-G04 P150
-M05 P0
-G04 P[#109]
-G01 Z[#105] F[#101]
-G04 P150
+G01 X280 Z60 A-40 B180 F900 ; Rise clear of sorting bin edges
+G01 X0 Z120 A0 B0 F1200 ; Return home for next material piece
 
-G01 X0 Y0 Z[#102] A0 B0 F[#100]
-M03 S1
-GOTO O100
+O100 ENDREPEAT
 
-O190
-M03 S0
-M09
-M05 P0
-G01 X0 Y0 Z[#102] A0 B0 F[#100]
-G04 P1000
-GOTO O100
-
-M30
+M30 ; End of program sequence
 
 Development advice for the app developer:
 

@@ -32,7 +32,8 @@ import {
   ChevronRight,
   ChevronDown,
   ChevronUp,
-  Pause
+  Pause,
+  Minimize2
 } from "lucide-react";
 
 interface RobotWorkspaceIDEProps {
@@ -60,6 +61,7 @@ interface RobotWorkspaceIDEProps {
   conveyorSpeed: number;
   obstacleHeight: number;
   sensorPositionX: number;
+  onCollapse?: () => void;
 }
 
 export default function RobotWorkspaceIDE({
@@ -86,7 +88,8 @@ export default function RobotWorkspaceIDE({
   robotType,
   conveyorSpeed,
   obstacleHeight,
-  sensorPositionX
+  sensorPositionX,
+  onCollapse
 }: RobotWorkspaceIDEProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const terminalBottomRef = useRef<HTMLDivElement>(null);
@@ -98,21 +101,11 @@ export default function RobotWorkspaceIDE({
   const waitingOnSensorRef = useRef(false);
   const simulationStateRef = useRef(simulationState);
 
-  useEffect(() => {
-    workpiecesRef.current = workpieces;
-  }, [workpieces]);
-
-  useEffect(() => {
-    sensorPositionXRef.current = sensorPositionX;
-  }, [sensorPositionX]);
-
-  useEffect(() => {
-    jointsRef.current = joints;
-  }, [joints]);
-
-  useEffect(() => {
-    simulationStateRef.current = simulationState;
-  }, [simulationState]);
+  // Synchronously update refs during render to avoid stale closure lags and state updates/effect delays
+  workpiecesRef.current = workpieces;
+  sensorPositionXRef.current = sensorPositionX;
+  jointsRef.current = joints;
+  simulationStateRef.current = simulationState;
   
   const [newFileName, setNewFileName] = useState("");
   const [showAddFile, setShowAddFile] = useState(false);
@@ -206,6 +199,50 @@ export default function RobotWorkspaceIDE({
         timestamp
       }
     ]);
+  };
+
+  // Motion Planner: Transition joints smoothly across frames over the step duration
+  const animateJoints = (fromJoints: RobotJoint[], toJoints: RobotJoint[], msDuration: number) => {
+    if (msDuration <= 50) {
+      jointsRef.current = toJoints;
+      setJoints(toJoints);
+      return;
+    }
+
+    const startTime = performance.now();
+    
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+
+    const step = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(1, elapsed / msDuration);
+      
+      // Easing calculation for organic robotic deceleration profiles
+      const t = progress < 0.5 ? 4 * progress * progress * progress : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+      
+      const interpolated = fromJoints.map(fj => {
+        const tj = toJoints.find(j => j.id === fj.id);
+        if (!tj) return fj;
+        const diff = tj.angle - fj.angle;
+        return {
+          ...fj,
+          angle: fj.angle + diff * t
+        };
+      });
+
+      jointsRef.current = interpolated;
+      setJoints(interpolated);
+
+      if (progress < 1) {
+        animationFrameRef.current = requestAnimationFrame(step);
+      } else {
+        animationFrameRef.current = null;
+      }
+    };
+
+    animationFrameRef.current = requestAnimationFrame(step);
   };
 
   // Create a brand new workspace code file
@@ -475,11 +512,51 @@ export default function RobotWorkspaceIDE({
         if (trimmedText.startsWith("#") && trimmedText.includes("=")) {
           const parts = trimmedText.split("=");
           const varName = parts[0].trim();
-          const varVal = parts[1].split(";")[0].trim();
-          const numVal = parseFloat(varVal);
+          const varVal = parts[1].split(";")[0].trim().toUpperCase();
+          
+          let numVal = parseFloat(varVal);
+
+          // DYNAMIC PLC REGISTER SENSOR RESOLVER
+          if (isNaN(numVal)) {
+            const currentWorkpieces = workpiecesRef.current;
+            const currentSensorX = sensorPositionXRef.current;
+            const scannedWp = currentWorkpieces.find(wp => 
+              wp.positionX >= currentSensorX - 35 && 
+              wp.positionX <= currentSensorX + 35 && 
+              (wp.status === "approaching" || wp.status === "picked")
+            ) || currentWorkpieces.find(wp => wp.status === "approaching" || wp.status === "picked");
+            
+            if (varVal === "AI1") {
+              // Red sensor value
+              numVal = scannedWp ? (scannedWp.color === "red" ? 240 : (scannedWp.color === "yellow" ? 230 : 15)) : 10;
+            } else if (varVal === "AI2") {
+              // Green sensor value
+              numVal = scannedWp ? (scannedWp.color === "green" ? 240 : (scannedWp.color === "yellow" ? 220 : 15)) : 10;
+            } else if (varVal === "AI3") {
+              // Blue sensor value
+              numVal = scannedWp ? (scannedWp.color === "blue" ? 240 : 15) : 10;
+            } else if (varVal === "AI4") {
+              // Proximity presence index (1 if part present at conveyor pick area, 0 otherwise)
+              numVal = scannedWp ? 1 : 0;
+            } else {
+              // If it's a math expression or reference to other variables (like #150 + 20)
+              let resolvedExpr = varVal;
+              for (const [key, value] of Object.entries(variableMap)) {
+                resolvedExpr = resolvedExpr.replace(new RegExp(key.replace("#", "\\#"), "g"), value.toString());
+              }
+              try {
+                // Safely evaluate simple math expressions
+                const sanitizedExpr = resolvedExpr.replace(/[^0-9\+\-\*\/\(\)\. ]/g, "");
+                numVal = parseFloat(new Function(`return (${sanitizedExpr})`)());
+              } catch (e) {
+                numVal = 0;
+              }
+            }
+          }
+
           if (varName && !isNaN(numVal)) {
             variableMap[varName] = numVal;
-            addLog("info", `[Variables] Setting Variable ${varName} = ${numVal}`);
+            addLog("info", `[Variables] Setting Variable ${varName} = ${numVal} (Source: ${varVal})`);
           }
           lineIdx++;
           continue;
@@ -508,6 +585,58 @@ export default function RobotWorkspaceIDE({
             lineIdx++;
             continue;
           }
+        }
+
+        // 7. Dynamic PLC/CNC Setup Filters & O-Labels (Command Layer Filter)
+        const labelClean = trimmedText.split(";")[0].split("(")[0].trim().toUpperCase();
+        if (/^O\d+$/i.test(labelClean)) {
+          addLog("info", `[Routine Marker] Flow marker label ${labelClean} registered successfully.`);
+          lineIdx++;
+          continue;
+        }
+
+        // 8. Branch conditionals or jump blocks: IF / GOTO
+        if (trimmedText.toUpperCase().startsWith("IF ") || trimmedText.toUpperCase().startsWith("IF[") || trimmedText.toUpperCase().startsWith("GOTO ")) {
+          const gotoMatch = trimmedText.toUpperCase().match(/GOTO\s*(O\d+)/i);
+          const targetLabel = gotoMatch ? gotoMatch[1] : null;
+
+          let conditionMet = true;
+          if (trimmedText.toUpperCase().startsWith("IF")) {
+            const condMatch = trimmedText.match(/\[([^\]]+)\]/);
+            if (condMatch) {
+              const condExpr = condMatch[1].toUpperCase(); // e.g. "#203 <= 0"
+              let resolvedCond = condExpr;
+              for (const [key, value] of Object.entries(variableMap)) {
+                resolvedCond = resolvedCond.replace(new RegExp(key.replace("#", "\\#"), "g"), value.toString());
+              }
+              // Replace logical operators
+              resolvedCond = resolvedCond.replace(/AND/gi, "&&").replace(/OR/gi, "||");
+              try {
+                const cleanExpr = resolvedCond.replace(/==/g, "===").replace(/<=/g, "<=").replace(/>=/g, ">=").replace(/!=/g, "!==");
+                conditionMet = !!(new Function(`return (${cleanExpr})`)());
+              } catch (e) {
+                conditionMet = true; // nominal fallback
+              }
+            }
+          }
+
+          if (conditionMet && targetLabel) {
+            const labelIdxTarget = codeLines.findIndex(line => {
+              const t = line.trim().toUpperCase().split(";")[0].split("(")[0].trim();
+              return t === targetLabel;
+            });
+            if (labelIdxTarget !== -1) {
+              addLog("info", `[Logic Branch] Jump condition met. Diverting execution flow dynamically to ${targetLabel} (Line ${labelIdxTarget + 1}).`);
+              lineIdx = labelIdxTarget;
+              continue;
+            } else {
+              addLog("error", `[Logic Error] Branch label ${targetLabel} not found in current program space.`);
+            }
+          }
+
+          addLog("info", `[Logic Branch] Conditional evaluation false or target resolved. Carrying on execution sequence...`);
+          lineIdx++;
+          continue;
         }
 
         // Resolve variables inside G-code parameters e.g. F[#101]
@@ -670,9 +799,33 @@ export default function RobotWorkspaceIDE({
                   return j;
                 });
 
-                jointsRef.current = nextJoints;
-                setJoints(nextJoints);
+                // Motion Planner: Convert direct jumps into smooth staged kinematics
+                animateJoints(startJoints, nextJoints, simulationSpeed * 0.95);
                 stepShouldPauseTick = true; // Wait for next tick so the physics/UI has a cycle to render and animate
+                break;
+              }
+              case "G17":
+              case "G18":
+              case "G19": {
+                addLog("info", `[Modal Filter] Plane Selection command (${parsed.command}) accepted and bypassed.`);
+                break;
+              }
+              case "G20":
+              case "G21": {
+                addLog("info", `[Modal Filter] Units Mode command (${parsed.command}) set to ${parsed.command === "G21" ? "METRIC (mm)" : "INCHES (in)"}.`);
+                break;
+              }
+              case "G90":
+              case "G91": {
+                addLog("info", `[Modal Filter] Positioning Mode command (${parsed.command}) set to ${parsed.command === "G90" ? "ABSOLUTE" : "INCREMENTAL"}.`);
+                break;
+              }
+              case "G92": {
+                addLog("info", `[Modal Filter] Coordinate System Preset Offset command (G92) processed successfully.`);
+                break;
+              }
+              case "M08": {
+                addLog("info", `[Auxiliary] M08: Pneumatic suction line secondary compressor auxiliary active.`);
                 break;
               }
               case "M03": {
@@ -756,9 +909,24 @@ export default function RobotWorkspaceIDE({
                       // Grab if workpiece X matches actual gripper X (within 24px) 
                       // and gripper is sufficiently low (near conveyor bed level)
                       const xDiff = Math.abs(wp.positionX - dropX);
-                      const isNearGripper = xDiff <= 24 && dropY >= 235;
+                      
+                      // Sensor-Corrected Pickup: Compensation extends normal tolerance to 38px
+                      let isNearGripper = false;
+                      let appliedCorrection = false;
+                      
+                      if (xDiff <= 24 && dropY >= 235) {
+                        isNearGripper = true;
+                      } else if (xDiff <= 38 && dropY >= 230) {
+                        isNearGripper = true;
+                        appliedCorrection = true;
+                      }
+
                       if (isNearGripper) {
-                        addLog("warn", `[Actuator] Pneumatic suction solenoid: ENGAGED [${wp.color.toUpperCase()} securely grasped at X=${Math.round(wp.positionX)}px]`);
+                        if (appliedCorrection) {
+                          addLog("success", `[Sensor-Corrected Pickup] Active offset correction applied (error = ${Math.round(wp.positionX - dropX)}px). Snap-aligning suction vacuum cup dynamically to workpiece center.`);
+                        } else {
+                          addLog("warn", `[Actuator] Pneumatic suction solenoid: ENGAGED [${wp.color.toUpperCase()} securely grasped at X=${Math.round(wp.positionX)}px]`);
+                        }
                         grabbedAny = true;
                         return { ...wp, status: "picked" as const };
                       }
@@ -992,6 +1160,9 @@ export default function RobotWorkspaceIDE({
   }, []);
 
   // Global Keyboard Shortcuts for Simulation Interpolator
+  const simulationStateStatus = simulationState.status;
+  const simulationStateIsCompiled = simulationState.isCompiled;
+
   useEffect(() => {
     const handleSimulationKeyDown = (e: KeyboardEvent) => {
       const activeEl = document.activeElement;
@@ -1010,8 +1181,8 @@ export default function RobotWorkspaceIDE({
       // Spacebar: Play/Pause/Resume simulation
       if (e.code === "Space") {
         e.preventDefault();
-        if (simulationState.isCompiled) {
-          if (simulationState.status === "running") {
+        if (simulationStateIsCompiled) {
+          if (simulationStateStatus === "running") {
             pauseSimulation();
           } else {
             resumeSimulation();
@@ -1041,7 +1212,7 @@ export default function RobotWorkspaceIDE({
 
       // 's' key: Single step next instruction
       if (key === "s" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        if (simulationState.status === "paused" || simulationState.status === "idle") {
+        if (simulationStateStatus === "paused" || simulationStateStatus === "idle") {
           e.preventDefault();
           stepSimulationLine();
         }
@@ -1060,7 +1231,7 @@ export default function RobotWorkspaceIDE({
     return () => {
       window.removeEventListener("keydown", handleSimulationKeyDown);
     };
-  }, [simulationState, simulationSpeed, activeBoard, activeFileIndex, files]);
+  }, [simulationStateStatus, simulationStateIsCompiled]);
 
   // Conveyor horizontal belt offset flow animation
   useEffect(() => {
@@ -1166,62 +1337,80 @@ export default function RobotWorkspaceIDE({
       
       {/* Top IDE Toolbar */}
       <div className="flex items-center justify-between px-3.5 py-2 bg-[#141417] border-b border-white/5 shrink-0">
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-3.5">
           {/* Collapse/Expand Sidebar button */}
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="p-1 hover:bg-[#1e1e23] hover:text-white rounded text-slate-400 font-mono text-[10px] flex items-center space-x-1 cursor-pointer transition-colors"
+            className="p-1 hover:bg-[#1e1e23] hover:text-white rounded text-slate-300 font-mono text-[10px] flex items-center space-x-1 cursor-pointer transition-colors"
             title={sidebarOpen ? "Hide File Explorer" : "Show File Explorer"}
           >
-            {sidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            <span className="hidden sm:inline-block text-[10px] font-bold uppercase text-slate-500">Explorer</span>
+            {sidebarOpen ? <ChevronLeft className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+            <span className="hidden sm:inline-block text-[10px] font-extrabold uppercase tracking-wide text-slate-200">EXPLORER</span>
           </button>
           
-          <div className="h-4 w-px bg-white/5 hidden sm:block"></div>
-
-          <div className="flex items-center space-x-2.5">
-            <FolderOpen className="w-4 h-4 text-blue-500" />
-            <span className="font-mono text-[10px] font-bold text-slate-450 tracking-wider hidden lg:inline-block">PROJECT FILES</span>
+          <div className="flex items-center">
+            <FolderOpen className="w-4 h-4 text-blue-400" />
           </div>
+
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="p-1 hover:bg-[#1e1e23] text-purple-400 hover:text-white rounded font-mono text-[10px] flex items-center space-x-1.5 cursor-pointer transition-all"
+              title="Minimize and Hide Code Workspace to maximize simulation visuals"
+              id="hide-workspace-btn"
+            >
+              <Minimize2 className="w-4 h-4 text-purple-400 shrink-0" />
+              <span className="hidden sm:inline-block text-[10px] font-black uppercase text-purple-400 tracking-wider">HIDE DECK</span>
+            </button>
+          )}
         </div>
         
         {/* Play/Stop & Reference Triggers */}
-        <div className="flex items-center space-x-2 shrink-0 select-none">
-          {/* Reference Modal button */}
+        <div className="flex items-center gap-1.5 shrink-0 select-none">
+          {/* Reference Modal button as a clean circular-feel question mark square button */}
           <button
             onClick={() => setShowHelpModal(true)}
-            className="h-8 px-2.5 bg-[#0d0d0f] hover:bg-[#1a1a24] border border-white/5 hover:border-white/10 rounded font-mono text-[9px] text-slate-300 hover:text-white flex items-center space-x-1 cursor-pointer transition-all shrink-0"
+            className="h-7 w-7 bg-[#0d0d0f] hover:bg-[#1a1a24] border border-white/5 hover:border-white/10 rounded-md flex items-center justify-center cursor-pointer transition-all shrink-0 text-blue-400 hover:text-blue-300"
             title="Open G-Code Command Reference Guide"
+            aria-label="Open G-Code Reference Manual"
           >
-            <HelpCircle className="w-3.5 h-3.5 text-blue-400" />
-            <span className="hidden lg:inline">Reference Manual</span>
+            <HelpCircle className="w-4 h-4" />
           </button>
 
           {/* Simulation Speed Dropdown Selector */}
-          <div className="flex items-center space-x-1 bg-[#0d0d0f] border border-white/5 rounded px-2 h-8 select-none shrink-0">
-            <span className="text-[8px] font-mono font-bold text-slate-400 uppercase tracking-wide hidden xl:inline">Speed:</span>
+          <div className="flex items-center bg-[#0d0d0f] border border-white/5 hover:border-white/10 rounded-md px-1.5 h-7 select-none shrink-0 transition-all">
             <select
               value={simulationSpeed}
               onChange={(e) => setSimulationSpeed(Number(e.target.value))}
               disabled={simulationState.isRunning}
-              className="bg-[#0d0d0f] text-slate-200 font-mono text-[9px] focus:outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-55"
+              className="bg-transparent text-slate-200 font-mono text-[9px] font-bold focus:outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-55 py-0.5"
               title="Execution step speed interval"
+              aria-label="Simulation speed factor"
             >
               <option value="2000" className="bg-[#141417] text-slate-200">0.5x</option>
               <option value="1500" className="bg-[#141417] text-slate-200">0.75x</option>
               <option value="1000" className="bg-[#141417] text-slate-200">1.0x (Calibrated)</option>
-              <option value="500" className="bg-[#141417] text-slate-200">2.0x (Direct Direct)</option>
-              <option value="250" className="bg-[#141417] text-slate-200">4.0x (Turbo Execution)</option>
+              <option value="500" className="bg-[#141417] text-slate-200">2.0x (Fast)</option>
+              <option value="250" className="bg-[#141417] text-slate-200">4.0x (Turbo)</option>
             </select>
           </div>
 
           {/* UNIFIED INTERACTIVE SIMULATION CONTROL SUITE */}
-          <div className="flex bg-[#0b0b0d] border border-white/10 rounded-lg p-1 space-x-1 items-center shrink-0">
+          <div className="flex bg-[#0b0b0d] border border-white/10 rounded-md p-0.5 gap-0.5 items-center shrink-0">
             {/* 1. FLASH PROGRAM & RUN */}
             <button
               onClick={handleCompileAndRun}
-              title="Compile and Start G-Code Routine to Virtual PLC Core (Key: F8)"
-              className={`flex items-center justify-center space-x-1 px-3.5 py-1 h-8 min-w-[85px] sm:min-w-[95px] font-mono text-[8.5px] font-extrabold rounded cursor-pointer border transition-all duration-300 shadow-sm ${
+              title={
+                (simulationState.isRunning || simulationState.status === "paused")
+                  ? "Stop current G-Code line interpolation sequence (Key: F8)"
+                  : "Compile and run G-Code onto virtual PLC register array (Key: F8)"
+              }
+              aria-label={
+                (simulationState.isRunning || simulationState.status === "paused")
+                  ? "Stop Simulation"
+                  : "Flash G-Code Program"
+              }
+              className={`flex items-center justify-center w-7 h-7 text-[8px] font-extrabold rounded cursor-pointer border transition-all duration-300 shadow-sm shrink-0 ${
                 (simulationState.isRunning || simulationState.status === "paused")
                   ? "bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/25"
                   : "bg-blue-600 hover:bg-blue-500 text-white border-blue-700 shadow"
@@ -1229,13 +1418,13 @@ export default function RobotWorkspaceIDE({
             >
               {(simulationState.isRunning || simulationState.status === "paused") ? (
                 <>
-                  <Trash2 className="w-3 h-3 text-rose-400" />
-                  <span>STOP</span>
+                  <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                  <span className="sr-only">STOP</span>
                 </>
               ) : (
                 <>
-                  <Cpu className="w-3 h-3 text-blue-200 animate-pulse shrink-0" />
-                  <span>FLASH [F8]</span>
+                  <Cpu className="w-3.5 h-3.5 text-blue-200 animate-pulse shrink-0" />
+                  <span className="sr-only">FLASH [F8]</span>
                 </>
               )}
             </button>
@@ -1251,8 +1440,9 @@ export default function RobotWorkspaceIDE({
                   resumeSimulation();
                 }
               }}
-              title="Pause or Resume execution sequence (Key: Spacebar)"
-              className={`flex items-center justify-center space-x-1 px-3 py-1 h-8 min-w-[75px] sm:min-w-[85px] font-mono text-[8.5px] font-extrabold rounded cursor-pointer border transition-all duration-300 shadow-sm ${
+              title="Pause or Resume G-Code execution sequence step-through (Key: Spacebar)"
+              aria-label="Pause or Resume G-Code Simulation"
+              className={`flex items-center justify-center w-7 h-7 text-[8px] font-extrabold rounded cursor-pointer border transition-all duration-300 shadow-sm shrink-0 ${
                 !simulationState.isCompiled 
                   ? "bg-[#18181b]/50 text-slate-500 border-white/5 hover:bg-[#18181b]/80 hover:text-slate-350"
                   : simulationState.status === "running"
@@ -1262,18 +1452,18 @@ export default function RobotWorkspaceIDE({
             >
               {!simulationState.isCompiled ? (
                 <>
-                  <Play className="w-3 h-3 text-slate-500 shrink-0" />
-                  <span>RUN [SP]</span>
+                  <Play className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <span className="sr-only">RUN [SP]</span>
                 </>
               ) : simulationState.status === "running" ? (
                 <>
-                  <Pause className="w-3 h-3 text-amber-400 fill-current shrink-0" />
-                  <span>PAUSE</span>
+                  <Pause className="w-3.5 h-3.5 text-amber-400 fill-current shrink-0" />
+                  <span className="sr-only">PAUSE</span>
                 </>
               ) : (
                 <>
-                  <Play className="w-3 h-3 text-emerald-400 fill-current shrink-0" />
-                  <span>RESUME</span>
+                  <Play className="w-3.5 h-3.5 text-emerald-400 fill-current shrink-0" />
+                  <span className="sr-only">RESUME</span>
                 </>
               )}
             </button>
@@ -1283,14 +1473,15 @@ export default function RobotWorkspaceIDE({
               onClick={stepSimulationLine}
               disabled={!simulationState.isCompiled || (simulationState.status !== "paused" && simulationState.status !== "idle")}
               title="Advantage step to the next line of instruction (Key: S)"
-              className={`flex items-center justify-center space-x-1 px-2.5 py-1 h-8 min-w-[65px] sm:min-w-[75px] font-mono text-[8.5px] font-extrabold rounded border transition-all duration-300 shadow-sm disabled:cursor-not-allowed disabled:opacity-25 ${
+              aria-label="Execute single G-Code line instruction"
+              className={`flex items-center justify-center w-7 h-7 text-[8px] font-extrabold rounded border transition-all duration-300 shadow-sm disabled:cursor-not-allowed disabled:opacity-25 shrink-0 ${
                 simulationState.isCompiled && (simulationState.status === "paused" || simulationState.status === "idle")
                   ? "bg-sky-600/10 text-sky-400 border-sky-500/25 hover:bg-sky-600/20"
                   : "bg-[#141417]/80 text-slate-600 border-white/5"
               }`}
             >
-              <ChevronRight className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-              <span>STEP [S]</span>
+              <ChevronRight className="w-4 h-4 text-sky-400 shrink-0" />
+              <span className="sr-only">STEP [S]</span>
             </button>
 
             {/* 4. EMERGENCY FORCE STOP */}
@@ -1309,10 +1500,11 @@ export default function RobotWorkspaceIDE({
                 }
               }}
               title="Immediate Hardware Emergency Kill (Key: Esc)"
-              className="flex items-center justify-center space-x-1 px-3 py-1 h-8 font-mono text-[8.5px] font-black rounded cursor-pointer border border-[#f43f5e] bg-red-950/40 text-outline-rose hover:bg-rose-700 hover:text-white transition-all duration-300 shadow animate-pulse hover:animate-none"
+              aria-label="Emergency Stop"
+              className="flex items-center justify-center w-7 h-7 text-[8px] font-black rounded cursor-pointer border border-[#f43f5e] bg-red-950/40 text-outline-rose hover:bg-rose-700 hover:text-white transition-all duration-300 shadow animate-pulse hover:animate-none shrink-0"
             >
-              <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
-              <span>FORCE STOP [ESC]</span>
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              <span className="sr-only">STOP [ESC]</span>
             </button>
           </div>
         </div>

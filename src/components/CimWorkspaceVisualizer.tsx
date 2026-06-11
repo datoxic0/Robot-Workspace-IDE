@@ -108,6 +108,8 @@ export default function CimWorkspaceVisualizer({
     new Array(40).fill(0),
   );
 
+  const jointsAnglesKey = joints.map((j) => `${j.id}:${j.angle}:${j.length}`).join(",");
+
   const prevJointsRef = useRef(joints);
   useEffect(() => {
     const delta = joints.reduce((sum, j, idx) => {
@@ -117,14 +119,19 @@ export default function CimWorkspaceVisualizer({
     prevJointsRef.current = joints;
 
     setVelocityHistory((prev) => {
+      if (delta === 0 && prev[prev.length - 1] === 0) {
+        return prev;
+      }
       const next = [...prev.slice(1), delta];
       return next;
     });
-  }, [joints]);
+  }, [jointsAnglesKey]);
 
   const [displayJoints, setDisplayJoints] = useState<RobotJoint[]>(
     () => joints,
   );
+  const displayJointsRef = useRef(displayJoints);
+  displayJointsRef.current = displayJoints; // Synchronous update across ALL renders to prevent requestAnimationFrame race conditions
 
   // Sync displayJoints with joints prop smoothly using motion profiling / damping interpolation
   useEffect(() => {
@@ -133,6 +140,31 @@ export default function CimWorkspaceVisualizer({
     const lerpFactor = isProfileEnabled ? 0.08 : 1.0; // 0.08 is a gorgeous smooth ease, 1.0 is direct jump
 
     const animate = () => {
+      // Determine if update is needed before changing state inside displayJoints
+      const currentDisplay = displayJointsRef.current;
+      const needsUpdate = currentDisplay.some((j, idx) => {
+        const targetJ = joints[idx];
+        if (!targetJ) return false;
+        return Math.abs(targetJ.angle - j.angle) > 0.01;
+      });
+
+      if (!needsUpdate) {
+        // Stop requesting new animation frames if settled
+        setDisplayJoints((prev) => {
+          let hasFinalDiff = false;
+          const aligned = prev.map((j, idx) => {
+            const targetJ = joints[idx];
+            if (targetJ && j.angle !== targetJ.angle) {
+              hasFinalDiff = true;
+              return { ...j, angle: targetJ.angle };
+            }
+            return j;
+          });
+          return hasFinalDiff ? aligned : prev;
+        });
+        return;
+      }
+
       let changed = false;
       setDisplayJoints((prev) => {
         const next = prev.map((j, idx) => {
@@ -164,7 +196,7 @@ export default function CimWorkspaceVisualizer({
     return () => {
       cancelAnimationFrame(animFrameId);
     };
-  }, [joints, simulationState.profilingEnabled]);
+  }, [jointsAnglesKey, simulationState.profilingEnabled]);
 
   const calibrationRegisters = [
     {
@@ -458,8 +490,8 @@ export default function CimWorkspaceVisualizer({
     if (!rect) return;
 
     // Check if user clicked near end effector coordinates or crosshair
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = ((e.clientX - rect.left) / rect.width) * svgWidth;
+    const y = ((e.clientY - rect.top) / rect.height) * svgHeight;
     const dist = Math.hypot(x - endEffector.x, y - endEffector.y);
 
     if (dist < 40) {
@@ -3350,41 +3382,71 @@ export default function CimWorkspaceVisualizer({
                   <Box className="w-6 h-6 text-blue-500 opacity-25" />
                 </div>
 
-                {/* Advanced specifications diagnostics */}
-                <div className="bg-[#1a1a1e] border border-white/5 rounded p-2 text-[9px] font-mono space-y-1 text-slate-400 shadow-inner">
-                  <div className="flex justify-between">
-                    <span>Tool Armature:</span>
-                    <span className="text-slate-200 uppercase">
-                      {robotDesign.endEffectorType} (PNEUMATIC)
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Conveyor status:</span>
-                    <span
-                      className={
-                        simulationState.conveyorRunning
-                          ? "text-emerald-400 font-semibold"
-                          : "text-slate-510"
-                      }
-                    >
-                      {simulationState.conveyorRunning
-                        ? "RUNNING (60 RPM)"
-                        : "HALTED"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Solenoid state:</span>
-                    <span
-                      className={
-                        simulationState.hasBlock
-                          ? "text-rose-400 font-semibold"
-                          : "text-slate-510"
-                      }
-                    >
-                      {simulationState.hasBlock ? "ENGAGED" : "STANDBY"}
-                    </span>
-                  </div>
-                </div>
+                 {/* Advanced specifications diagnostics */}
+                 <div className="bg-[#1a1a1e] border border-white/5 rounded p-2.5 text-[9px] font-mono space-y-1 text-slate-400 shadow-inner">
+                   <div className="flex justify-between">
+                     <span>Sector / Class:</span>
+                     <span className="text-purple-300 font-semibold uppercase">
+                       {robotDesign.category || "industrial"}
+                     </span>
+                   </div>
+                   <div className="flex justify-between">
+                     <span>Chassis Frame:</span>
+                     <span className="text-teal-400 uppercase font-semibold">
+                       {(robotDesign.chassisType || "fixed_base").replace("_", " ")}
+                     </span>
+                   </div>
+                   <div className="flex justify-between">
+                     <span>Vision Module:</span>
+                     <span className="text-cyan-400 uppercase">
+                       {(robotDesign.visionSensorType || "lidar_2d").replace("_", " ")}
+                     </span>
+                   </div>
+                   <div className="flex justify-between">
+                     <span>Power Source:</span>
+                     <span className="text-amber-400 font-semibold">
+                       {robotDesign.batteryCapacity || 450} Wh
+                     </span>
+                   </div>
+                   <div className="flex justify-between">
+                     <span>Speed Cap:</span>
+                     <span className="text-purple-400 font-semibold">
+                       {robotDesign.speedLimit || 1.5} m/s
+                     </span>
+                   </div>
+                   <div className="border-t border-white/5 my-1.5 pt-1.5 flex justify-between">
+                     <span>Tool Armature:</span>
+                     <span className="text-slate-200 uppercase font-semibold">
+                       {robotDesign.endEffectorType} (PNEUMATIC)
+                     </span>
+                   </div>
+                   <div className="flex justify-between">
+                     <span>Conveyor status:</span>
+                     <span
+                       className={
+                         simulationState.conveyorRunning
+                           ? "text-emerald-400 font-semibold"
+                           : "text-slate-510"
+                       }
+                     >
+                       {simulationState.conveyorRunning
+                         ? "RUNNING (60 RPM)"
+                         : "HALTED"}
+                     </span>
+                   </div>
+                   <div className="flex justify-between">
+                     <span>Solenoid state:</span>
+                     <span
+                       className={
+                         simulationState.hasBlock
+                           ? "text-rose-400 font-semibold"
+                           : "text-slate-510"
+                       }
+                     >
+                       {simulationState.hasBlock ? "ENGAGED" : "STANDBY"}
+                     </span>
+                   </div>
+                 </div>
               </div>
 
               {/* Dynamic AI Kinematics Solver Console */}

@@ -83,6 +83,14 @@ export interface RobotDesignConfig {
   wristLength: number;
   endEffectorType: "gripper" | "suction" | "welder";
   payloadWeight: number; // kg
+  category?: "industrial" | "corporate" | "domestic";
+  visionSensorType?: "lidar_2d" | "depth_camera_3d" | "stereoscopic_vision" | "ultrasonic_array";
+  visionRange?: number;
+  visionAngle?: number;
+  chassisType?: "fixed_base" | "wheeled" | "quadruped";
+  hasAIVisionModel?: boolean;
+  batteryCapacity?: number; // Wh
+  speedLimit?: number; // m/s
 }
 
 export interface CIMWorkpiece {
